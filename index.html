@@ -182,6 +182,11 @@ button{cursor:pointer}
 .secbox .hd input{flex:1;font-family:var(--display);font-weight:600}
 .confirm{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;color:var(--bad);background:var(--bad-soft);border-radius:10px;padding:8px 10px}
 .addrow{display:flex;gap:8px}
+.addrow select{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:8px 6px;font-size:14px;max-width:42%}
+.share{display:flex;flex-direction:column;gap:8px;border-top:1px dashed var(--line);padding-top:10px}
+.share .lab{font-size:13px;color:var(--muted)}
+.share .who{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
+.share .setrow{grid-template-columns:auto 1fr auto auto}
 .addrow input{flex:1;min-width:0;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 10px;font-size:16px}
 textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!important;min-height:100px;direction:ltr}
 
@@ -327,7 +332,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function payeeNames(){var o={}; state.expenses.forEach(function(e){if(e.payee)o[e.payee]=1}); return Object.keys(o).sort()}
 
   // ---------- storage ----------
-  function save(){try{localStorage.setItem(KEY,JSON.stringify(state)); return true}catch(e){toast('تعذّر الحفظ في الجهاز. خذ نسخة احتياطية الآن.'); return false}}
+  function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(state)); return true}catch(e){toast('تعذّر الحفظ في الجهاز. خذ نسخة احتياطية الآن.'); return false}}
+  function save(){var r=saveLocal(); if(r)cloudKick(); return r}
   function load(){
     var d=null; try{d=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){}
     if(d&&Array.isArray(d.books)){state=Object.assign(state,d)}
@@ -364,6 +370,292 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function rput(id,data){return db().then(function(d){return new Promise(function(res,rej){var t=d.transaction('receipts','readwrite'); t.objectStore('receipts').put(data,id); t.oncomplete=res; t.onerror=function(){rej(t.error)}})})}
   function rget(id){return db().then(function(d){return new Promise(function(res){var q=d.transaction('receipts').objectStore('receipts').get(id); q.onsuccess=function(){res(q.result||null)}; q.onerror=function(){res(null)}})}).catch(function(){return null})}
   function rdel(id){return db().then(function(d){d.transaction('receipts','readwrite').objectStore('receipts').delete(id)}).catch(function(){})}
+  // ---------- cloud: account, sync between devices, sharing (Supabase) ----------
+  // The publishable key is meant to be public; row-level security on the server decides who sees what.
+  var CLOUD={url:'',key:''};
+  var CK='masrofi.cloud', SBJS='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js';
+  var IDRE=/^[A-Za-z0-9_-]{1,64}$/, DRE=/^\d{4}-\d{2}-\d{2}$/;
+  var EK=['cat','amount','date','status','method','payee','ref','note','receipt','created','dueDate'];
+  var cloud={sb:null,user:null,linked:null,busy:false,again:false,timer:null,last:0,err:'',first:false,replace:false,snap:{b:{},e:{}},meta:{},members:{},up:{},cursor:null};
+  function cloudLoad(){try{var c=JSON.parse(localStorage.getItem(CK)||'null'); if(c){cloud.linked=c.linked||null; cloud.snap=c.snap||{b:{},e:{}}; cloud.meta=c.meta||{}; cloud.members=c.members||{}; cloud.up=c.up||{}; cloud.cursor=c.cursor||null; cloud.first=!!c.first; cloud.replace=!!c.replace}}catch(e){}}
+  function cloudSave(){try{localStorage.setItem(CK,JSON.stringify({linked:cloud.linked,snap:cloud.snap,meta:cloud.meta,members:cloud.members,up:cloud.up,cursor:cloud.cursor,first:cloud.first,replace:cloud.replace}))}catch(e){}}
+  function acct(){return cloud.user||cloud.linked}
+  function ro(bid){var m=acct()&&cloud.meta[bid]; return !!(m&&m.role==='viewer')}
+  function mine(bid){var m=cloud.meta[bid], u=acct(); return !u||!m||m.owner===u.id}
+  function writable(){return state.books.filter(function(b){return !ro(b.id)})}
+  function bookData(b){return {name:b.name,kind:b.kind,color:b.color,budget:b.budget||0,contract:b.contract||0,contractCat:b.contractCat||null,cats:b.cats.map(function(c){return {id:c.id,n:c.n,c:c.c,fixed:!!c.fixed}})}}
+  function expData(e){var o={}; EK.forEach(function(k){if(e[k]!==undefined&&e[k]!==null)o[k]=e[k]}); return o}
+  function bj(b){return JSON.stringify(bookData(b))}
+  function ej(e){return JSON.stringify([e.book,expData(e)])}
+  function cleanBook(id,d){
+    if(!IDRE.test(id)||!d||typeof d!=='object')return null;
+    var kind=d.kind==='monthly'?'monthly':'project', n8=function(v){return Math.min(8,Math.max(1,Math.round(+v)||8))};
+    var cats=(Array.isArray(d.cats)?d.cats:[]).filter(function(c){return c&&IDRE.test(String(c.id))}).slice(0,80).map(function(c){return {id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:n8(c.c),fixed:!!c.fixed}});
+    var b={id:id,name:String(d.name||'قسم').slice(0,30),kind:kind,color:n8(d.color),budget:Math.max(0,+d.budget||0),contract:Math.max(0,+d.contract||0),cats:cats.length?cats:tpl(kind)};
+    if(d.contractCat&&IDRE.test(String(d.contractCat)))b.contractCat=String(d.contractCat);
+    return b;
+  }
+  function cleanExp(id,bid,d){
+    if(!IDRE.test(id)||!IDRE.test(bid)||!d||!(+d.amount>0)||!DRE.test(d.date||''))return null;
+    var e={id:id,book:bid,cat:IDRE.test(String(d.cat))?String(d.cat):'other',amount:Math.round(+d.amount*100)/100,date:d.date,status:d.status==='due'?'due':'paid',
+      method:String(d.method||'').slice(0,20),payee:String(d.payee||'').slice(0,60),ref:String(d.ref||'').slice(0,40),note:String(d.note||'').slice(0,140),created:+d.created||0,
+      receipt:d.receipt&&IDRE.test(String(d.receipt))?String(d.receipt):null};
+    if(DRE.test(d.dueDate||''))e.dueDate=d.dueDate;
+    return e;
+  }
+  function setBook(t,s){['name','kind','color','budget','contract','cats'].forEach(function(k){t[k]=s[k]}); if(s.contractCat)t.contractCat=s.contractCat; else delete t.contractCat}
+  function setExp(t,s){t.book=s.book; EK.forEach(function(k){if(s[k]===undefined)delete t[k]; else t[k]=s[k]})}
+  // ids get the account's suffix so two people's sections never clash on the server
+  function scoped(id){var u=acct(), tag='-'+u.id.replace(/-/g,'').slice(0,8); id=IDRE.test(String(id))?String(id):uid(); return id.slice(-tag.length)===tag?id:id.slice(0,48)+tag}
+  function remapLocal(){
+    var m={}; state.books.forEach(function(b){m[b.id]=scoped(b.id); b.id=m[b.id]});
+    state.expenses.forEach(function(e){e.book=m[e.book]||e.book; e.id=scoped(e.id)});
+    if(ui.book)ui.book=m[ui.book]||null; ui.rp.book=m[ui.rp.book]||'all'; ui.catBook=null;
+  }
+  function wipeLocal(){
+    try{localStorage.removeItem(KEY); localStorage.removeItem(CK)}catch(e){}
+    db().then(function(d){d.transaction('receipts','readwrite').objectStore('receipts').clear()}).catch(function(){});
+  }
+
+  function cloudInit(){
+    if(!CLOUD.url||cloud.sb)return;
+    need('sb',SBJS,function(){return !!(window.supabase&&window.supabase.createClient)}).then(function(){
+      if(cloud.sb)return;
+      cloud.sb=window.supabase.createClient(CLOUD.url,CLOUD.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storageKey:'masrofi.auth'}});
+      cloud.sb.auth.onAuthStateChange(function(ev,s){
+        var u=s&&s.user?{id:s.user.id,email:s.user.email||''}:null, was=cloud.user&&cloud.user.id;
+        cloud.user=u;
+        if(ev==='PASSWORD_RECOVERY')setTimeout(newPassword,400);
+        // supabase-js asks not to call it from inside this callback
+        if(u&&u.id!==was)setTimeout(linkAccount,0);
+        if(ui.view==='settings')softRender();
+      });
+    }).catch(function(){cloud.err='net'; syncUI()});
+  }
+  function linkAccount(){
+    var u=cloud.user; if(!u)return;
+    if(cloud.linked&&cloud.linked.id===u.id){sync(); return}
+    if(cloud.linked){ // a different account was on this device: start clean
+      wipeLocal(); state.books=[]; state.expenses=[]; cloud.replace=true;
+    }else{
+      cloud.linked=u; remapLocal(); cloud.replace=!state.expenses.length;
+    }
+    cloud.linked=u; cloud.snap={b:{},e:{}}; cloud.meta={}; cloud.members={}; cloud.up={}; cloud.cursor=null; cloud.first=true;
+    saveLocal(); cloudSave(); render(); sync();
+  }
+  function cloudKick(){if(!acct())return; clearTimeout(cloud.timer); cloud.timer=setTimeout(sync,1200)}
+  function sync(){
+    if(!cloud.sb||!cloud.user)return Promise.resolve(false);
+    if(cloud.busy){cloud.again=true; return cloud.busy}
+    clearTimeout(cloud.timer); cloud.err=''; syncUI();
+    var run=cloud.first?pull().then(push):push().then(pull);
+    cloud.busy=run.then(function(){cloud.first=false; cloud.last=Date.now(); cloudSave(); return true},function(e){cloud.err=errKind(e); cloudSave(); return false})
+      .then(function(ok){cloud.busy=false; syncUI(); if(cloud.again){cloud.again=false; setTimeout(sync,50)} return ok});
+    return cloud.busy;
+  }
+  function errKind(e){var m=String((e&&(e.message||e.error_description))||e||''); return /fetch|network|Failed|load/i.test(m)?'net':'server'}
+  function ok(r){if(r&&r.error)throw r.error; return r&&r.data}
+  function push(){
+    var sb=cloud.sb, me=cloud.user.id, snap=cloud.snap, hb={}, have={};
+    state.books.forEach(function(b){hb[b.id]=1}); state.expenses.forEach(function(e){have[e.id]=1});
+    var bUp=[], bJ={}, eUp=[], eJ={};
+    state.books.forEach(function(b){if(ro(b.id))return; var j=bj(b); if(snap.b[b.id]!==j){bUp.push({id:b.id,data:bookData(b)}); bJ[b.id]=j}});
+    state.expenses.forEach(function(e){if(ro(e.book)||!hb[e.book])return; var j=ej(e); if(snap.e[e.id]!==j){eUp.push({id:e.id,book_id:e.book,data:expData(e),deleted:false}); eJ[e.id]=j}});
+    Object.keys(snap.e).forEach(function(id){
+      if(have[id])return; var bid=JSON.parse(snap.e[id])[0];
+      if(hb[bid]&&!ro(bid)){eUp.push({id:id,book_id:bid,data:{},deleted:true}); eJ[id]=null}
+    });
+    var gone=Object.keys(snap.b).filter(function(id){return !hb[id]});
+    var p=Promise.resolve();
+    if(bUp.length)p=p.then(function(){return sb.from('books').upsert(bUp)}).then(ok).then(function(){Object.keys(bJ).forEach(function(id){snap.b[id]=bJ[id]; if(!cloud.meta[id])cloud.meta[id]={owner:me,role:'owner',email:cloud.user.email}}); cloudSave()});
+    for(var i=0;i<eUp.length;i+=500)(function(part){
+      p=p.then(function(){return sb.from('expenses').upsert(part)}).then(ok).then(function(){part.forEach(function(r){if(eJ[r.id]===null)delete snap.e[r.id]; else snap.e[r.id]=eJ[r.id]}); cloudSave()});
+    })(eUp.slice(i,i+500));
+    gone.forEach(function(id){
+      p=p.then(function(){return mine(id)?sb.from('books').delete().eq('id',id):sb.from('book_members').delete().eq('book_id',id).eq('user_id',me)}).then(ok).then(function(){
+        delete snap.b[id]; delete cloud.meta[id]; delete cloud.members[id];
+        Object.keys(snap.e).forEach(function(k){if(JSON.parse(snap.e[k])[0]===id)delete snap.e[k]}); cloudSave()});
+    });
+    return p.then(pushReceipts);
+  }
+  function pushReceipts(){
+    var todo=state.expenses.filter(function(e){return e.receipt&&cloud.up[e.receipt]!==e.book&&!ro(e.book)&&cloud.snap.b[e.book]}).slice(0,8);
+    return todo.reduce(function(p,e){return p.then(function(){
+      return rget(e.receipt).then(function(d){
+        if(!d)return;
+        return fetch(d).then(function(r){return r.blob()}).then(function(blob){return cloud.sb.storage.from('receipts').upload(e.book+'/'+e.receipt+'.jpg',blob,{upsert:true,contentType:'image/jpeg'})})
+          .then(ok).then(function(){cloud.up[e.receipt]=e.book; cloudSave()});
+      });
+    })},Promise.resolve());
+  }
+  function pull(){
+    var sb=cloud.sb, me=cloud.user.id, snap=cloud.snap, changed=false;
+    return Promise.all([sb.from('books').select('id,owner,owner_email,data'),sb.from('book_members').select('book_id,user_id,email,role')]).then(function(r){
+      var rows=ok(r[0])||[], mem=ok(r[1])||[];
+      if(cloud.replace&&rows.length){state.books=[]; state.expenses=[]; changed=true}
+      cloud.replace=false;
+      var role={}, members={}, seen={}, fresh=[];
+      mem.forEach(function(m){if(m.user_id===me)role[m.book_id]=m.role==='editor'?'editor':'viewer'; else (members[m.book_id]=members[m.book_id]||[]).push({user_id:m.user_id,email:String(m.email||''),role:m.role==='editor'?'editor':'viewer'})});
+      cloud.members=members;
+      rows.forEach(function(row){
+        var nb=cleanBook(String(row.id),row.data); if(!nb)return; seen[nb.id]=1;
+        cloud.meta[nb.id]={owner:row.owner,email:String(row.owner_email||''),role:row.owner===me?'owner':(role[nb.id]||'viewer')};
+        var b=book(nb.id);
+        if(!b){state.books.push(nb); fresh.push(nb.id); snap.b[nb.id]=bj(nb); changed=true; return}
+        var dirty=snap.b[b.id]===undefined?!cloud.first:snap.b[b.id]!==bj(b);
+        if(!dirty||ro(b.id)){if(bj(b)!==bj(nb)){setBook(b,nb); changed=true} snap.b[b.id]=bj(b)}
+      });
+      state.books.slice().forEach(function(b){
+        if(seen[b.id]||snap.b[b.id]===undefined)return;
+        state.books=state.books.filter(function(x){return x!==b}); state.expenses=state.expenses.filter(function(e){return e.book!==b.id});
+        if(ui.book===b.id)ui.book=null; if(ui.rp.book===b.id)ui.rp.book='all';
+        delete snap.b[b.id]; delete cloud.meta[b.id]; Object.keys(snap.e).forEach(function(k){if(JSON.parse(snap.e[k])[0]===b.id)delete snap.e[k]}); changed=true;
+      });
+      var since=cloud.cursor?new Date(new Date(cloud.cursor).getTime()-15000).toISOString():null;
+      var jobs=[pageExp(function(q){return since?q.gt('updated_at',since):q})];
+      if(since&&fresh.length)jobs.push(pageExp(function(q){return q.in('book_id',fresh)}));
+      return Promise.all(jobs);
+    }).then(function(lists){
+      var idx={}; state.expenses.forEach(function(e){idx[e.id]=e});
+      var max=cloud.cursor;
+      lists.forEach(function(list){list.forEach(function(row){
+        if(!max||row.updated_at>max)max=row.updated_at;
+        var id=String(row.id), cur=idx[id], bid=String(row.book_id);
+        if(!book(bid))return;
+        if(!cur&&snap.e[id]!==undefined&&!ro(bid))return; // deleted here, not pushed yet
+        var dirty=cur&&!ro(bid)&&(snap.e[id]===undefined?!cloud.first:snap.e[id]!==ej(cur));
+        if(dirty||(cur&&cur===form.editing))return;
+        if(row.deleted){if(cur){state.expenses=state.expenses.filter(function(e){return e!==cur}); delete idx[id]; changed=true} delete snap.e[id]; return}
+        var ne=cleanExp(id,bid,row.data); if(!ne)return;
+        if(!cur){state.expenses.push(ne); idx[id]=ne; changed=true} else if(ej(cur)!==ej(ne)){setExp(cur,ne); changed=true}
+        snap.e[id]=ej(idx[id]);
+      })});
+      cloud.cursor=max;
+      if(!state.books.length){state.books.push({id:scoped('personal'),name:'مصاريفي الشخصية',kind:'monthly',color:1,budget:0,contract:0,cats:tpl('monthly')}); changed=true}
+      if(changed){saveLocal(); softRender()}
+      cloudSave();
+    });
+  }
+  function pageExp(filter){
+    var out=[];
+    function step(from){
+      return filter(cloud.sb.from('expenses').select('id,book_id,data,deleted,updated_at')).order('updated_at',{ascending:true}).order('id',{ascending:true}).range(from,from+999)
+        .then(ok).then(function(rows){rows=rows||[]; out=out.concat(rows); return rows.length===1000?step(from+1000):out});
+    }
+    return step(0);
+  }
+  // render now unless the person is typing in this page
+  function softRender(){var a=document.activeElement; if(a&&$('view').contains(a)&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)){softRender.wait=true; return} render()}
+  document.addEventListener('focusout',function(){if(softRender.wait)setTimeout(function(){if(softRender.wait){softRender.wait=false; softRender()}},300)});
+  function receiptSrc(e){
+    return rget(e.receipt).then(function(d){
+      if(d||!cloud.sb||!cloud.user||!e.receipt)return d;
+      return cloud.sb.storage.from('receipts').download(e.book+'/'+e.receipt+'.jpg').then(function(r){
+        if(r.error||!r.data)return null;
+        return new Promise(function(res){var fr=new FileReader(); fr.onload=function(){var s=fr.result; if(typeof s==='string'&&/^data:image\/(jpeg|png|webp)/.test(s)){rput(e.receipt,s).catch(function(){}); cloud.up[e.receipt]=e.book; cloudSave(); res(s)}else res(null)}; fr.onerror=function(){res(null)}; fr.readAsDataURL(r.data)});
+      },function(){return null});
+    });
+  }
+  function syncUI(){
+    var el=$('syncSt'); if(!el)return;
+    el.textContent=!cloud.sb?(cloud.err==='net'?'ما في اتصال بالإنترنت. تغييراتك محفوظة في الجهاز وبتنرفع لما تتصل.':'جاري الاتصال...'):
+      cloud.busy?'جاري المزامنة...':cloud.err==='net'?'ما في اتصال بالإنترنت. تغييراتك محفوظة في الجهاز وبتنرفع لما تتصل.':cloud.err?'صار خطأ في المزامنة. بنحاول مرة ثانية بعد شوي.':
+      cloud.last?'آخر مزامنة الساعة '+new Date(cloud.last).toLocaleTimeString('ar-AE',{hour:'numeric',minute:'2-digit'}):'';
+  }
+  function authMsg(e){
+    var m=String((e&&e.message)||e||'');
+    if(/Invalid login/i.test(m))return 'الإيميل أو كلمة السر غلط.';
+    if(/not confirmed/i.test(m))return 'أكّد إيميلك أول من الرسالة اللي وصلتك، وبعدين سجّل دخول.';
+    if(/already registered|already been registered|exists/i.test(m))return 'هذا الإيميل مسجل من قبل. اضغط «دخول».';
+    if(/security purposes|rate limit|too many/i.test(m))return 'محاولات كثيرة. انتظر شوي وجرب مرة ثانية.';
+    if(/password/i.test(m))return 'كلمة السر ضعيفة. استخدم 8 أحرف أو أكثر.';
+    if(/fetch|network|Failed/i.test(m))return 'ما في اتصال بالإنترنت.';
+    return 'ما قدرت أكمل. جرب مرة ثانية.';
+  }
+  function authForm(){
+    var email=($('auEmail').value||'').trim(), pass=$('auPass').value||'';
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){$('auErr').textContent='اكتب إيميل صحيح.'; return null}
+    if(pass.length<8){$('auErr').textContent='كلمة السر لازم 8 أحرف أو أكثر.'; return null}
+    $('auErr').textContent=''; return {email:email,password:pass};
+  }
+  function authBusy(on){['auIn','auUp','auForgot'].forEach(function(id){if($(id))$(id).disabled=on})}
+  function signIn(){
+    var f=authForm(); if(!f)return; if(!cloud.sb){$('auErr').textContent='ما في اتصال بالإنترنت.'; cloudInit(); return}
+    authBusy(true);
+    cloud.sb.auth.signInWithPassword(f).then(function(r){if(r.error)throw r.error; toast('تم تسجيل الدخول')}).catch(function(e){if($('auErr'))$('auErr').textContent=authMsg(e)}).then(function(){authBusy(false)});
+  }
+  function signUp(){
+    var f=authForm(); if(!f)return; if(!cloud.sb){$('auErr').textContent='ما في اتصال بالإنترنت.'; cloudInit(); return}
+    authBusy(true);
+    cloud.sb.auth.signUp({email:f.email,password:f.password,options:{emailRedirectTo:location.origin+location.pathname}}).then(function(r){
+      if(r.error)throw r.error;
+      if(r.data&&r.data.session)toast('تم إنشاء الحساب');
+      else if(r.data&&r.data.user&&r.data.user.identities&&!r.data.user.identities.length)$('auErr').textContent='هذا الإيميل مسجل من قبل. اضغط «دخول».';
+      else $('auErr').textContent='أرسلنا لك رسالة تأكيد على '+f.email+'. افتحها، وبعدين ارجع هني واضغط «دخول».';
+    }).catch(function(e){if($('auErr'))$('auErr').textContent=authMsg(e)}).then(function(){authBusy(false)});
+  }
+  function forgot(){
+    var email=($('auEmail').value||'').trim();
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){$('auErr').textContent='اكتب إيميلك فوق أول.'; return}
+    if(!cloud.sb){$('auErr').textContent='ما في اتصال بالإنترنت.'; return}
+    cloud.sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname}).then(function(r){
+      $('auErr').textContent=r.error?authMsg(r.error):'أرسلنا لك رابط لتغيير كلمة السر على الإيميل.'});
+  }
+  function newPassword(){
+    var p=window.prompt('اكتب كلمة السر الجديدة (8 أحرف أو أكثر)'); if(!p)return;
+    if(p.length<8){toast('كلمة السر لازم 8 أحرف أو أكثر'); return newPassword()}
+    cloud.sb.auth.updateUser({password:p}).then(function(r){toast(r.error?authMsg(r.error):'تم تغيير كلمة السر')});
+  }
+  function signOut(btn){
+    btn.disabled=true;
+    sync().then(function(done){
+      if(!done&&!window.confirm('ما قدرت أرفع آخر التغييرات للسحابة. لو طلعت الحين بتضيع من هذا الجهاز. تبي تطلع؟')){btn.disabled=false; return}
+      return cloud.sb.auth.signOut().catch(function(){}).then(function(){wipeLocal(); try{localStorage.removeItem('masrofi.auth')}catch(e){} setTimeout(function(){location.reload()},150)});
+    });
+  }
+  function shareBook(bid,btn){
+    var em=V.querySelector('[data-shemail="'+bid+'"]'), rl=V.querySelector('[data-shrole="'+bid+'"]'), email=(em.value||'').trim().toLowerCase();
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('اكتب إيميل صحيح'); em.focus(); return}
+    if(!cloud.user){toast('سجّل دخول أول'); return}
+    btn.disabled=true;
+    sync().then(function(){
+      if(!cloud.snap.b[bid])throw new Error('push');
+      return cloud.sb.rpc('share_book',{b:bid,member_email:email,member_role:rl.value});
+    }).then(function(r){
+      var res=ok(r);
+      if(res==='no_account')toast('هذا الإيميل ما عنده حساب في مصروفي. خله يسوي حساب أول، وبعدين شاركه.');
+      else if(res==='self')toast('هذا إيميلك أنت');
+      else{toast('تمت المشاركة مع '+email); return sync()}
+    }).catch(function(){toast('ما قدرت أشارك القسم. تأكد من الاتصال وجرب مرة ثانية.')}).then(function(){btn.disabled=false; render()});
+  }
+  function unshare(bid,uidv){
+    cloud.sb.from('book_members').delete().eq('book_id',bid).eq('user_id',uidv).then(function(r){
+      if(r.error){toast('ما قدرت ألغي المشاركة'); return}
+      cloud.members[bid]=(cloud.members[bid]||[]).filter(function(m){return m.user_id!==uidv}); cloudSave(); toast('تم إلغاء المشاركة'); render();
+    });
+  }
+  function accountCard(){
+    if(!CLOUD.url)return '';
+    var u=acct();
+    if(!u)return '<section class="card" id="acct"><h3>الحساب والمزامنة<span class="tag plain">غير مسجل</span></h3>'+
+      '<p class="note">سجّل دخول عشان تنحفظ بياناتك في السحابة بشكل آمن، وتوصلها من أي جهاز، وتشارك مشروع مع أشخاص تختارهم. بياناتك الحالية بتنرفع لحسابك.</p>'+
+      '<div class="field"><label for="auEmail">الإيميل</label><input id="auEmail" type="email" autocomplete="email" inputmode="email" dir="ltr" maxlength="120"></div>'+
+      '<div class="field"><label for="auPass">كلمة السر</label><input id="auPass" type="password" autocomplete="current-password" dir="ltr" placeholder="8 أحرف أو أكثر" maxlength="72"></div><div class="err" id="auErr"></div>'+
+      '<div class="row"><button class="btn" type="button" id="auIn">دخول</button><button class="btn soft" type="button" id="auUp">حساب جديد</button></div>'+
+      '<button class="btn ghost" type="button" id="auForgot">نسيت كلمة السر</button><p class="note" id="syncSt"></p></section>';
+    return '<section class="card" id="acct"><h3>الحساب والمزامنة<span class="tag ok">مسجل</span></h3>'+
+      '<p class="note">مسجل بـ <bdi>'+esc(u.email)+'</bdi>. بياناتك محفوظة في حسابك على السحابة، وما يشوفها إلا أنت واللي تشاركهم.</p><p class="note" id="syncSt"></p>'+
+      '<div class="row"><button class="btn soft" type="button" id="auSync">مزامنة الآن</button><button class="btn ghost" type="button" id="auOut">تسجيل خروج</button></div></section>';
+  }
+  function shareBox(b){
+    if(!CLOUD.url||!acct())return '';
+    var m=cloud.meta[b.id];
+    if(!mine(b.id))return '<p class="note">مشترك معك من <bdi>'+esc(m.email||'')+'</bdi> · '+(m.role==='editor'?'تقدر تضيف وتعدل':'للعرض فقط')+'</p>';
+    var list=cloud.members[b.id]||[];
+    return '<div class="share"><span class="lab">المشاركة</span>'+
+      (list.length?list.map(function(x){return '<div class="setrow"><span class="dot" style="background:var(--muted)"></span><span class="who" dir="ltr">'+esc(x.email)+'</span><span class="note">'+(x.role==='editor'?'يضيف ويعدل':'يشوف بس')+'</span><button type="button" class="mini danger" data-unshare="'+b.id+'" data-uid="'+esc(x.user_id)+'">إلغاء</button></div>'}).join(''):'<p class="note">ما شاركته مع أحد.</p>')+
+      '<div class="addrow"><input data-shemail="'+b.id+'" type="email" inputmode="email" dir="ltr" placeholder="إيميل الشخص" aria-label="إيميل الشخص" maxlength="120"><select data-shrole="'+b.id+'" aria-label="الصلاحية"><option value="viewer">يشوف بس</option><option value="editor">يضيف ويعدل</option></select><button type="button" class="mini" data-share="'+b.id+'">مشاركة</button></div></div>';
+  }
   function compress(file){
     return new Promise(function(res,rej){
       var url=URL.createObjectURL(file), img=new Image();
@@ -567,7 +859,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function bookView(){
     if(!book(ui.book))ui.book=state.books[0]&&state.books[0].id;
     var b=book(ui.book); if(!b)return '<div class="empty"><b>ما في أقسام</b><button class="btn" data-act="newbook" type="button">أضف قسم</button></div>';
-    var h='<header class="top"><div><h1>'+esc(b.name)+'</h1><p>'+(b.kind==='monthly'?'مصاريف شهرية':'مشروع')+'</p></div><button class="pillbtn" type="button" data-act="editbook">تعديل القسم</button></header>'+switcher();
+    var h='<header class="top"><div><h1>'+esc(b.name)+'</h1><p>'+(b.kind==='monthly'?'مصاريف شهرية':'مشروع')+(acct()&&!mine(b.id)?' · مشترك معك'+(ro(b.id)?' للعرض فقط':''):acct()&&(cloud.members[b.id]||[]).length?' · مشترك مع '+cloud.members[b.id].length:'')+'</p></div><button class="pillbtn" type="button" data-act="editbook">تعديل القسم</button></header>'+switcher();
     var all=inBook(b.id);
     if(b.kind==='monthly'){
       var m=ui.month, mk=ym(m), rows=all.filter(function(e){return e.date.slice(0,7)===mk});
@@ -638,7 +930,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       '<div class="kpis"><div class="kpi"><span>العمليات</span><b class="num" id="rpCount">0</b></div><div class="kpi"><span>مدفوع</span><b class="num" id="rpPaid">0</b></div><div class="kpi"><span>مستحق</span><b class="num" id="rpDue">0</b></div></div>'+
       '<div class="err" id="rpErr"></div>'+
       '<div class="row"><button class="btn" type="button" id="rpPdf">تقرير PDF للطباعة</button><button class="btn soft" type="button" id="rpXlsx">ملف Excel</button></div>'+
-      '<p class="note">بعد الحفظ افتح الملف من تطبيق «الملفات»، ومن زر المشاركة اختر «طباعة» أو أرسله لمن تريد. تجهيز الملف يحتاج إنترنت، وبياناتك ما تطلع من جهازك.</p></section>';
+      '<p class="note">بعد الحفظ افتح الملف من تطبيق «الملفات»، ومن زر المشاركة اختر «طباعة» أو أرسله لمن تريد. تجهيز الملف يحتاج إنترنت'+(acct()?'.':'، وبياناتك ما تطلع من جهازك.')+'</p></section>';
     return h;
   }
   function rpRows(){
@@ -656,13 +948,14 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
 
   function settingsView(){
-    var h='<header class="top"><div><h1>الإعدادات</h1><p>الأقسام والفئات والقفل والنسخ الاحتياطي</p></div></header>';
+    var h='<header class="top"><div><h1>الإعدادات</h1><p>الحساب والأقسام والفئات والقفل والنسخ الاحتياطي</p></div></header>';
+    h+=accountCard();
     h+='<section class="card"><h3>الأقسام والمشاريع</h3><div class="set">'+state.books.map(secBox).join('')+'</div>'+newBookForm()+'</section>';
-    if(!book(ui.catBook))ui.catBook=state.books[0]&&state.books[0].id;
+    var wb=writable(); if(!book(ui.catBook)||ro(ui.catBook))ui.catBook=wb[0]&&wb[0].id;
     var cb=book(ui.catBook);
     if(cb){
       var used={}; inBook(cb.id).forEach(function(e){used[e.cat]=(used[e.cat]||0)+1});
-      h+='<section class="card"><h3>الفئات</h3><div class="field"><label for="catBookSel">القسم</label><select id="catBookSel">'+state.books.map(function(b){return '<option value="'+b.id+'"'+(b.id===cb.id?' selected':'')+'>'+esc(b.name)+'</option>'}).join('')+'</select></div><div class="set">'+
+      h+='<section class="card"><h3>الفئات</h3><div class="field"><label for="catBookSel">القسم</label><select id="catBookSel">'+wb.map(function(b){return '<option value="'+b.id+'"'+(b.id===cb.id?' selected':'')+'>'+esc(b.name)+'</option>'}).join('')+'</select></div><div class="set">'+
         cb.cats.map(function(c){
           var del=!c.fixed&&cb.cats.length>1;
           return '<div class="setrow"><span class="dot" style="background:'+cv(c.c)+'"></span><input data-catname="'+c.id+'" maxlength="30" value="'+esc(c.n)+'" aria-label="اسم الفئة">'+
@@ -675,7 +968,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     h+='<section class="card"><h3>العملة</h3><select id="currency" class="search" aria-label="العملة">'+[['درهم','درهم إماراتي'],['ريال','ريال سعودي'],['ر.ق','ريال قطري'],['د.ك','دينار كويتي'],['د.ب','دينار بحريني'],['ر.ع','ريال عماني'],['$','دولار']].map(function(c){return '<option value="'+c[0]+'"'+(state.currency===c[0]?' selected':'')+'>'+c[1]+'</option>'}).join('')+'</select></section>';
     h+='<section class="card"><h3>قفل التطبيق'+(state.pin?'<span class="tag ok">مفعّل</span>':'<span class="tag plain">غير مفعّل</span>')+'</h3><p class="note">رمز من 4 أرقام يطلبه التطبيق كل ما تفتحه. إذا نسيت الرمز ما تقدر تدخل، فخذ نسخة احتياطية قبل.</p>'+
       (state.pin?'<div class="row"><button class="btn soft" type="button" data-act="setpin">تغيير الرمز</button><button class="btn danger" type="button" data-act="rmpin">إلغاء القفل</button></div>':'<button class="btn soft" type="button" data-act="setpin">تفعيل القفل</button>')+'</section>';
-    h+='<section class="card"><h3>النسخة الاحتياطية</h3><p class="note">كل بياناتك محفوظة في Safari على جهازك فقط. إذا مسحت بيانات Safari تنمسح، فاحفظ ملف نسخة احتياطية كل فترة في «الملفات» أو iCloud Drive.</p>'+
+    h+='<section class="card"><h3>النسخة الاحتياطية</h3><p class="note">'+(acct()?'بياناتك محفوظة في حسابك على السحابة. ملف النسخة الاحتياطية خيار إضافي تحتفظ فيه عندك.':'كل بياناتك محفوظة في Safari على جهازك فقط. إذا مسحت بيانات Safari تنمسح، فاحفظ ملف نسخة احتياطية كل فترة في «الملفات» أو iCloud Drive.')+'</p>'+
       '<button class="btn" type="button" id="bkSave">حفظ ملف نسخة احتياطية (مع الصور)</button><button class="btn ghost" type="button" id="bkCopy">نسخ كنص (بدون الصور)</button>'+
       '<div class="field"><label for="bkFile">استرجاع من ملف</label><input type="file" id="bkFile" accept=".json,application/json,text/plain"></div>'+
       '<div class="field"><label for="bkText">أو الصق النص هنا</label><textarea class="backup" id="bkText"></textarea></div><div class="err" id="bkErr"></div>'+
@@ -683,12 +976,12 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     return h;
   }
   function secBox(b){
-    var n=inBook(b.id).length;
-    return '<div class="secbox"><div class="hd"><span class="dot" style="background:'+cv(b.color)+'"></span><input class="search" data-bname="'+b.id+'" maxlength="30" value="'+esc(b.name)+'" aria-label="اسم القسم"></div>'+
-      '<div class="row"><div class="field"><label for="bud-'+b.id+'">'+(b.kind==='monthly'?'الميزانية الشهرية':'ميزانية المشروع الكلية')+'</label><input id="bud-'+b.id+'" class="num" data-bbudget="'+b.id+'" inputmode="decimal" placeholder="بدون" value="'+(b.budget?fmt(b.budget):'')+'"></div>'+
-      (b.kind==='project'?'<div class="field"><label for="con-'+b.id+'">قيمة عقد المقاول</label><input id="con-'+b.id+'" class="num" data-bcontract="'+b.id+'" inputmode="decimal" placeholder="بدون" value="'+(b.contract?fmt(b.contract):'')+'"></div>':'')+'</div>'+
-      '<div class="split"><span>'+(b.kind==='monthly'?'مصاريف شهرية':'مشروع')+' · <span class="num">'+n+'</span> عملية</span>'+(state.books.length>1?'<button type="button" class="mini danger" data-delbook="'+b.id+'">حذف القسم</button>':'')+'</div>'+
-      '<div class="confirm" data-bookconfirm="'+b.id+'" hidden><span>بينحذف القسم و<span class="num">'+n+'</span> عملية فيه نهائياً.</span><button type="button" class="mini danger" data-delbookyes="'+b.id+'">احذف</button><button type="button" class="mini" data-cancel="1">تراجع</button></div></div>';
+    var n=inBook(b.id).length, dis=ro(b.id)?' disabled':'', own=mine(b.id);
+    return '<div class="secbox"><div class="hd"><span class="dot" style="background:'+cv(b.color)+'"></span><input class="search" data-bname="'+b.id+'" maxlength="30" value="'+esc(b.name)+'" aria-label="اسم القسم"'+dis+'></div>'+
+      '<div class="row"><div class="field"><label for="bud-'+b.id+'">'+(b.kind==='monthly'?'الميزانية الشهرية':'ميزانية المشروع الكلية')+'</label><input id="bud-'+b.id+'" class="num" data-bbudget="'+b.id+'" inputmode="decimal" placeholder="بدون" value="'+(b.budget?fmt(b.budget):'')+'"'+dis+'></div>'+
+      (b.kind==='project'?'<div class="field"><label for="con-'+b.id+'">قيمة عقد المقاول</label><input id="con-'+b.id+'" class="num" data-bcontract="'+b.id+'" inputmode="decimal" placeholder="بدون" value="'+(b.contract?fmt(b.contract):'')+'"'+dis+'></div>':'')+'</div>'+
+      '<div class="split"><span>'+(b.kind==='monthly'?'مصاريف شهرية':'مشروع')+' · <span class="num">'+n+'</span> عملية</span>'+(state.books.length>1||!own?'<button type="button" class="mini danger" data-delbook="'+b.id+'">'+(own?'حذف القسم':'إزالة من عندي')+'</button>':'')+'</div>'+shareBox(b)+
+      '<div class="confirm" data-bookconfirm="'+b.id+'" hidden><span>'+(own?'بينحذف القسم و<span class="num">'+n+'</span> عملية فيه نهائياً'+(acct()&&(cloud.members[b.id]||[]).length?'، وعند اللي شاركتهم بعد':'')+'.':'بيختفي القسم من عندك، ويبقى عند صاحبه.')+'</span><button type="button" class="mini danger" data-delbookyes="'+b.id+'">احذف</button><button type="button" class="mini" data-cancel="1">تراجع</button></div></div>';
   }
   function newBookForm(){
     return '<div class="secbox" id="newBookBox"><b style="font-family:var(--display)">إضافة قسم أو مشروع</b>'+
@@ -701,18 +994,20 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function moveTarget(b,id){var l=b.cats.filter(function(x){return x.id!==id}); return l.find(function(x){return /other$/.test(x.id)})||l[l.length-1]}
 
   // ---------- entry form ----------
-  var form={editing:null,book:null,cat:{},status:'paid',photo:null,photoChanged:false};
-  function chipsBooks(){$('fBooks').innerHTML=state.books.map(function(b){return '<button type="button" class="chip" data-fbook="'+b.id+'" aria-pressed="'+(b.id===form.book)+'">'+esc(b.name)+'</button>'}).join('')}
+  var form={editing:null,book:null,cat:{},status:'paid',photo:null,photoChanged:false,ro:false};
+  function chipsBooks(){$('fBooks').innerHTML=(form.ro?[book(form.book)]:writable()).map(function(b){return '<button type="button" class="chip" data-fbook="'+b.id+'" aria-pressed="'+(b.id===form.book)+'">'+esc(b.name)+'</button>'}).join('')}
   function chipsCats(){var b=book(form.book); if(!b)return; if(!b.cats.some(function(c){return c.id===form.cat[b.id]}))form.cat[b.id]=b.cats[0].id;
     $('fCats').innerHTML=b.cats.map(function(c){return '<button type="button" class="chip" data-fcat="'+c.id+'" aria-pressed="'+(c.id===form.cat[b.id])+'">'+esc(c.n)+'</button>'}).join('')}
   function setStatus(s){form.status=s; Array.prototype.forEach.call($('fStatus').children,function(x){x.setAttribute('aria-pressed',x.dataset.v===s)}); $('fDateLbl').textContent=s==='due'?'تاريخ الاستحقاق':'تاريخ الدفع'}
-  function setThumb(src){$('fThumb').hidden=!src; if(src)$('fThumb').src=src; else $('fThumb').removeAttribute('src'); $('fRmPhoto').hidden=!src}
+  function setThumb(src){$('fThumb').hidden=!src; if(src)$('fThumb').src=src; else $('fThumb').removeAttribute('src'); $('fRmPhoto').hidden=!src||form.ro}
   function openForm(e){
-    form.editing=e||null; form.photo=null; form.photoChanged=false;
-    form.book=e?e.book:(ui.view==='book'&&book(ui.book)?ui.book:(state.books[0]&&state.books[0].id));
+    var wb=writable(); if(!e&&!wb.length){toast('الأقسام عندك مشتركة للعرض فقط'); return}
+    form.editing=e||null; form.photo=null; form.photoChanged=false; form.ro=!!(e&&ro(e.book));
+    form.book=e?e.book:(ui.view==='book'&&book(ui.book)&&!ro(ui.book)?ui.book:wb[0].id);
     if(e)form.cat[e.book]=e.cat;
-    $('formTitle').textContent=e?'تعديل العملية':'عملية جديدة';
-    $('fBookWrap').hidden=state.books.length<2;
+    $('formTitle').textContent=form.ro?'تفاصيل العملية (للعرض فقط)':e?'تعديل العملية':'عملية جديدة';
+    $('fBookWrap').hidden=!form.ro&&wb.length<2;
+    $('fSave').hidden=form.ro; $('fFile').disabled=form.ro;
     chipsBooks(); chipsCats();
     $('fAmount').value=e?String(e.amount):'';
     var b=book(form.book), now=new Date();
@@ -722,15 +1017,15 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     $('fPayee').value=e?(e.payee||''):''; $('fRef').value=e?(e.ref||''):''; $('fNote').value=e?(e.note||''):'';
     $('payeeList').innerHTML=payeeNames().map(function(n){return '<option value="'+esc(n)+'">'}).join('');
     setThumb(null); $('fFile').value='';
-    if(e&&e.receipt) rget(e.receipt).then(function(src){if(form.editing===e&&!form.photoChanged)setThumb(src)});
-    $('fErr').textContent=''; $('fDelete').hidden=!e; $('fConfirm').hidden=true; $('fSave').disabled=false;
+    if(e&&e.receipt) receiptSrc(e).then(function(src){if(form.editing===e&&!form.photoChanged)setThumb(src)});
+    $('fErr').textContent=''; $('fDelete').hidden=!e||form.ro; $('fRmPhoto').hidden=true; $('fConfirm').hidden=true; $('fSave').disabled=false;
     $('formScrim').hidden=false;
     if(!e)setTimeout(function(){$('fAmount').focus()},60);
   }
   function closeForm(){$('formScrim').hidden=true; form.editing=null}
-  $('fBooks').addEventListener('click',function(ev){var x=ev.target.closest('[data-fbook]'); if(!x)return; form.book=x.dataset.fbook; chipsBooks(); chipsCats()});
-  $('fCats').addEventListener('click',function(ev){var x=ev.target.closest('[data-fcat]'); if(!x)return; form.cat[form.book]=x.dataset.fcat; chipsCats()});
-  $('fStatus').addEventListener('click',function(ev){var x=ev.target.closest('[data-v]'); if(x)setStatus(x.dataset.v)});
+  $('fBooks').addEventListener('click',function(ev){var x=ev.target.closest('[data-fbook]'); if(!x||form.ro)return; form.book=x.dataset.fbook; chipsBooks(); chipsCats()});
+  $('fCats').addEventListener('click',function(ev){var x=ev.target.closest('[data-fcat]'); if(!x||form.ro)return; form.cat[form.book]=x.dataset.fcat; chipsCats()});
+  $('fStatus').addEventListener('click',function(ev){var x=ev.target.closest('[data-v]'); if(x&&!form.ro)setStatus(x.dataset.v)});
   $('fFile').addEventListener('change',function(){
     var f=this.files&&this.files[0]; if(!f)return;
     compress(f).then(function(d){form.photo=d; form.photoChanged=true; setThumb(d)},function(){$('fErr').textContent='ما قدرت أقرأ الصورة. جرب صورة ثانية.'});
@@ -739,7 +1034,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   $('fThumb').onclick=function(){$('viewerImg').src=this.src; $('viewer').hidden=false};
   $('viewer').onclick=function(){this.hidden=true};
   $('form').addEventListener('submit',function(ev){
-    ev.preventDefault();
+    ev.preventDefault(); if(form.ro)return;
     var amt=parseAmount($('fAmount').value);
     if(!(amt>0)){$('fErr').textContent='اكتب مبلغ أكبر من صفر.'; return}
     var date=$('fDate').value; if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){$('fErr').textContent='اختر التاريخ.'; return}
@@ -773,7 +1068,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   V.addEventListener('click',function(ev){
     var t=ev.target, x;
     if((x=t.closest('.hit'))){showTip(x); return}
-    if((x=t.closest('[data-pay]'))){var e=state.expenses.find(function(r){return r.id===x.dataset.pay}); if(e){e.status='paid'; e.dueDate=e.date; e.date=today(); save(); toast('تم تسجيلها كمدفوعة اليوم'); render()} return}
+    if((x=t.closest('[data-pay]'))){var e=state.expenses.find(function(r){return r.id===x.dataset.pay}); if(e&&ro(e.book)){toast('هذا القسم للعرض فقط'); return} if(e){e.status='paid'; e.dueDate=e.date; e.date=today(); save(); toast('تم تسجيلها كمدفوعة اليوم'); render()} return}
     if((x=t.closest('[data-edit]'))){var e2=state.expenses.find(function(r){return r.id===x.dataset.edit}); if(e2)openForm(e2); return}
     if((x=t.closest('[data-open]'))){ui.book=x.dataset.open; ui.q=''; ui.status='all'; ui.view='book'; render(); window.scrollTo(0,0); return}
     if((x=t.closest('[data-go]'))){go(x.dataset.go); return}
@@ -792,7 +1087,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       state.expenses.filter(function(r){return r.book===bid&&r.receipt}).forEach(function(r){rdel(r.receipt)});
       state.expenses=state.expenses.filter(function(r){return r.book!==bid}); state.books=state.books.filter(function(b){return b.id!==bid});
       if(ui.book===bid)ui.book=null; if(ui.rp.book===bid)ui.rp.book='all';
-      save(); toast('تم حذف القسم'); render(); return}
+      save(); toast(mine(bid)?'تم حذف القسم':'تمت إزالة القسم من عندك'); render(); return}
     if(t.id==='addBook'){
       var name=$('newName').value.trim(); if(!name){$('newName').focus(); toast('اكتب اسم القسم'); return}
       var bud=parseAmount($('newBudget').value), used=state.books.map(function(b){return b.color});
@@ -806,6 +1101,13 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       var item={id:'c'+uid(),n:v,c:cn}, oi=cb2.cats.findIndex(function(c){return /other$/.test(c.id)});
       if(oi>=0)cb2.cats.splice(oi,0,item); else cb2.cats.push(item);
       save(); render(); toast('تمت إضافة «'+v+'»'); return}
+    if((x=t.closest('[data-share]'))){shareBook(x.dataset.share,x); return}
+    if((x=t.closest('[data-unshare]'))){unshare(x.dataset.unshare,x.dataset.uid); return}
+    if(t.id==='auIn'){signIn(); return}
+    if(t.id==='auUp'){signUp(); return}
+    if(t.id==='auForgot'){forgot(); return}
+    if(t.id==='auSync'){sync().then(function(r){if(r)toast('تمت المزامنة')}); return}
+    if(t.id==='auOut'){signOut(t); return}
     if(t.id==='rpPdf'){makePdf(t); return}
     if(t.id==='rpXlsx'){makeXlsx(t); return}
     if(t.id==='bkSave'){backupFile(); return}
@@ -824,18 +1126,19 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   V.addEventListener('input',function(ev){if(ev.target.id==='search'){ui.q=ev.target.value; $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project')}});
   V.addEventListener('change',function(ev){
     var t=ev.target, d=t.dataset, v=(t.value||'').trim();
-    if(t.id==='search')return;
+    if(t.id==='search'||t.id==='auEmail'||t.id==='auPass'||d.shemail||d.shrole)return;
     if(t.id==='rpBook'){ui.rp.book=v; if(ui.rp.quick==='all')rpQuick('all'); render(); return}
     if(t.id==='rpFrom'){ui.rp.from=v; ui.rp.quick=''; render(); return}
     if(t.id==='rpTo'){ui.rp.to=v; ui.rp.quick=''; render(); return}
     if(t.id==='catBookSel'){ui.catBook=v; render(); return}
     if(t.id==='currency'){state.currency=v; save(); toast('تم تغيير العملة'); return}
     if(t.id==='bkFile'){var f=t.files&&t.files[0]; if(f){var r=new FileReader(); r.onload=function(){$('bkText').value=r.result; toast('الملف جاهز، اضغط «استرجاع»')}; r.readAsText(f)} return}
+    if((d.bname||d.bbudget||d.bcontract)&&ro(d.bname||d.bbudget||d.bcontract))return;
     if(d.bname){var b=book(d.bname); if(!v){t.value=b.name; return} b.name=v}
     else if(d.bbudget){var n=parseAmount(v); book(d.bbudget).budget=n>0?n:0}
     else if(d.bcontract){var n2=parseAmount(v); book(d.bcontract).contract=n2>0?n2:0}
     else if(d.catname){var c=catOf(book(ui.catBook),d.catname); if(!v){t.value=c.n; return} c.n=v}
-    else if(t.hasAttribute('data-payee')){var old=t.getAttribute('data-payee'); if(!v){t.value=old; return} state.expenses.forEach(function(e){if(e.payee===old)e.payee=v})}
+    else if(t.hasAttribute('data-payee')){var old=t.getAttribute('data-payee'); if(!v){t.value=old; return} state.expenses.forEach(function(e){if(e.payee===old&&!ro(e.book))e.payee=v})}
     else return;
     save(); toast('تم الحفظ'); render();
   });
@@ -868,8 +1171,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   // ---------- backup ----------
   function exportData(receipts){var o={app:'masrofi',v:4,exported:new Date().toISOString(),currency:state.currency,books:state.books,expenses:state.expenses}; if(receipts)o.receipts=receipts; return o}
   function backupFile(){
-    var ids=state.expenses.filter(function(e){return e.receipt}).map(function(e){return e.receipt});
-    Promise.all(ids.map(function(id){return rget(id).then(function(d){return [id,d]})})).then(function(pairs){
+    var withR=state.expenses.filter(function(e){return e.receipt});
+    Promise.all(withR.map(function(e){return receiptSrc(e).then(function(d){return [e.receipt,d]})})).then(function(pairs){
       var rec={}; pairs.forEach(function(p){if(p[1])rec[p[0]]=p[1]});
       return saveFile('masrofi-backup-'+today()+'.json',JSON.stringify(exportData(rec)),'تم حفظ النسخة الاحتياطية');
     });
@@ -880,7 +1183,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(!Array.isArray(d)&&Array.isArray(d.books)){
       d.books.forEach(function(nb){
         if(!nb||!nb.id)return;
-        var b=book(nb.id);
+        if(acct()){nb=Object.assign({},nb,{id:scoped(nb.id)})}
+        var b=book(nb.id); if(b&&ro(b.id))return;
         if(!b){state.books.push({id:String(nb.id),name:String(nb.name||'قسم').slice(0,30),kind:nb.kind==='monthly'?'monthly':'project',color:+nb.color||8,budget:+nb.budget||0,contract:+nb.contract||0,contractCat:nb.contractCat?String(nb.contractCat):undefined,cats:(nb.cats||[]).filter(function(c){return c&&c.id}).map(function(c){return {id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:+c.c||8,fixed:!!c.fixed}})}); return}
         (nb.cats||[]).forEach(function(c){if(c&&c.id&&!b.cats.some(function(x){return x.id===c.id}))b.cats.push({id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:+c.c||8})});
         if(!b.contract&&+nb.contract>0)b.contract=+nb.contract; if(!b.budget&&+nb.budget>0)b.budget=+nb.budget;
@@ -889,8 +1193,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var have={}; state.expenses.forEach(function(e){have[e.id]=1});
     var added=0, jobs=[];
     list.forEach(function(e){
+      if(e&&acct())e=Object.assign({},e,{id:scoped(e.id),book:scoped(e.book)});
       if(!e||have[e.id]||!(+e.amount>0)||!/^\d{4}-\d{2}-\d{2}$/.test(e.date||''))return;
-      var bid=book(e.book)?e.book:state.books[0].id, b=book(bid);
+      var wb=writable(), bid=book(e.book)&&!ro(e.book)?e.book:wb[0].id, b=book(bid);
       var cid=b.cats.some(function(c){return c.id===e.cat})?e.cat:moveTarget(b,'').id;
       var ne={id:String(e.id||uid()),book:bid,cat:cid,amount:Math.round(+e.amount*100)/100,date:e.date,status:e.status==='due'?'due':'paid',method:String(e.method||'').slice(0,20),payee:String(e.payee||'').slice(0,60),ref:String(e.ref||'').slice(0,40),note:String(e.note||'').slice(0,140),created:+e.created||Date.now(),receipt:null};
       if(e.receipt&&d.receipts&&typeof d.receipts[e.receipt]==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(d.receipts[e.receipt])){var rid=String(e.receipt); jobs.push(rput(rid,d.receipts[e.receipt]).then(function(){ne.receipt=rid},function(){}))}
@@ -982,8 +1287,12 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       .then(function(){btn.disabled=false; btn.textContent=old});
   }
 
-  load(); render();
+  cloudLoad(); load(); render();
   if(state.pin)showLock('unlock');
+  cloudInit();
+  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')sync()});
+  window.addEventListener('online',function(){if(cloud.sb)sync(); else cloudInit()});
+  setInterval(function(){if(document.visibilityState==='visible')sync()},45000);
 })();
 </script>
 </body></html>
