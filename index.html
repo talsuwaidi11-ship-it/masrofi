@@ -372,8 +372,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function rdel(id){return db().then(function(d){d.transaction('receipts','readwrite').objectStore('receipts').delete(id)}).catch(function(){})}
   // ---------- cloud: account, sync between devices, sharing (Supabase) ----------
   // The publishable key is meant to be public; row-level security on the server decides who sees what.
-  var CLOUD={url:'',key:''};
-  var CK='masrofi.cloud', SBJS='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js';
+  var CLOUD={url:'https://lkqwiruomkhmisqmdvai.supabase.co',key:'sb_publishable_tpW77D7GfMNrsuccklXIIg_KHKdQnD7'};
+  var CK='masrofi.cloud', SBJS='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js';
   var IDRE=/^[A-Za-z0-9_-]{1,64}$/, DRE=/^\d{4}-\d{2}-\d{2}$/;
   var EK=['cat','amount','date','status','method','payee','ref','note','receipt','created','dueDate'];
   var cloud={sb:null,user:null,linked:null,busy:false,again:false,timer:null,last:0,err:'',first:false,replace:false,snap:{b:{},e:{}},meta:{},members:{},up:{},cursor:null};
