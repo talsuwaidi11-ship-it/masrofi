@@ -375,11 +375,25 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   var CLOUD={url:'https://lkqwiruomkhmisqmdvai.supabase.co',key:'sb_publishable_tpW77D7GfMNrsuccklXIIg_KHKdQnD7'};
   var CK='masrofi.cloud', SBJS='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js';
   var IDRE=/^[A-Za-z0-9_-]{1,64}$/, DRE=/^\d{4}-\d{2}-\d{2}$/;
+  function okId(id){id=String(id); return IDRE.test(id)&&!(id in Object.prototype)}
   var EK=['cat','amount','date','status','method','payee','ref','note','receipt','created','dueDate'];
-  var cloud={sb:null,user:null,linked:null,busy:false,again:false,timer:null,last:0,err:'',first:false,replace:false,snap:{b:{},e:{}},meta:{},members:{},up:{},cursor:null};
+  var cloud={sb:null,user:null,linked:null,expired:false,busy:false,again:false,timer:null,last:0,err:'',first:false,replace:false,snap:{b:{},e:{}},meta:{},members:{},up:{},cursor:null};
   function cloudLoad(){try{var c=JSON.parse(localStorage.getItem(CK)||'null'); if(c){cloud.linked=c.linked||null; cloud.snap=c.snap||{b:{},e:{}}; cloud.meta=c.meta||{}; cloud.members=c.members||{}; cloud.up=c.up||{}; cloud.cursor=c.cursor||null; cloud.first=!!c.first; cloud.replace=!!c.replace}}catch(e){}}
-  function cloudSave(){try{localStorage.setItem(CK,JSON.stringify({linked:cloud.linked,snap:cloud.snap,meta:cloud.meta,members:cloud.members,up:cloud.up,cursor:cloud.cursor,first:cloud.first,replace:cloud.replace}))}catch(e){}}
+  function cloudSave(){try{localStorage.setItem(CK,JSON.stringify({linked:cloud.linked,snap:cloud.snap,meta:cloud.meta,members:cloud.members,up:cloud.up,cursor:cloud.cursor,first:cloud.first,replace:cloud.replace}))}catch(e){if(!cloudSave.warned){cloudSave.warned=1; toast('مساحة التخزين في الجهاز ممتلئة. المزامنة ممكن تتأخر.')}}}
   function acct(){return cloud.user||cloud.linked}
+  // things changed here that the server doesn't have yet
+  function dirtyCount(){
+    var n=0, s=cloud.snap, have={};
+    state.books.forEach(function(b){if(!ro(b.id)&&s.b[b.id]!==bj(b))n++});
+    state.expenses.forEach(function(e){have[e.id]=1; if(!ro(e.book)&&s.e[e.id]!==ej(e))n++});
+    Object.keys(s.e).forEach(function(id){if(!have[id])n++});
+    var hb={}; state.books.forEach(function(b){hb[b.id]=1}); Object.keys(s.b).forEach(function(id){if(!hb[id])n++});
+    return n;
+  }
+  function receiptsPending(){
+    var todo=state.expenses.filter(function(e){return e.receipt&&cloud.up[e.receipt]!==e.book&&!ro(e.book)});
+    return Promise.all(todo.map(function(e){return rget(e.receipt)})).then(function(l){return l.filter(Boolean).length});
+  }
   function ro(bid){var m=acct()&&cloud.meta[bid]; return !!(m&&m.role==='viewer')}
   function mine(bid){var m=cloud.meta[bid], u=acct(); return !u||!m||m.owner===u.id}
   function writable(){return state.books.filter(function(b){return !ro(b.id)})}
@@ -390,25 +404,25 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function fin(v){v=+v; return isFinite(v)&&v>0?Math.round(v*100)/100:0}
   function validDate(s){return DRE.test(s||'')&&ymd(new Date(s+'T12:00:00'))===s}
   function cleanBook(id,d){
-    if(!IDRE.test(id)||!d||typeof d!=='object')return null;
+    if(!okId(id)||!d||typeof d!=='object')return null;
     var kind=d.kind==='monthly'?'monthly':'project', n8=function(v){return Math.min(8,Math.max(1,Math.round(+v)||8))};
-    var cats=(Array.isArray(d.cats)?d.cats:[]).filter(function(c){return c&&IDRE.test(String(c.id))}).slice(0,80).map(function(c){return {id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:n8(c.c),fixed:!!c.fixed}});
+    var cats=(Array.isArray(d.cats)?d.cats:[]).filter(function(c){return c&&okId(String(c.id))}).slice(0,80).map(function(c){return {id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:n8(c.c),fixed:!!c.fixed}});
     var b={id:id,name:String(d.name||'قسم').slice(0,30),kind:kind,color:n8(d.color),budget:fin(d.budget),contract:fin(d.contract),cats:cats.length?cats:tpl(kind)};
-    if(d.contractCat&&IDRE.test(String(d.contractCat)))b.contractCat=String(d.contractCat);
+    if(d.contractCat&&okId(String(d.contractCat)))b.contractCat=String(d.contractCat);
     return b;
   }
   function cleanExp(id,bid,d){
-    if(!IDRE.test(id)||!IDRE.test(bid)||!d||!fin(d.amount)||!validDate(d.date))return null;
-    var e={id:id,book:bid,cat:IDRE.test(String(d.cat))?String(d.cat):'other',amount:fin(d.amount),date:d.date,status:d.status==='due'?'due':'paid',
+    if(!okId(id)||!okId(bid)||!d||!fin(d.amount)||!validDate(d.date))return null;
+    var e={id:id,book:bid,cat:okId(String(d.cat))?String(d.cat):'other',amount:fin(d.amount),date:d.date,status:d.status==='due'?'due':'paid',
       method:String(d.method||'').slice(0,20),payee:String(d.payee||'').slice(0,60),ref:String(d.ref||'').slice(0,40),note:String(d.note||'').slice(0,140),created:+d.created||0,
-      receipt:d.receipt&&IDRE.test(String(d.receipt))?String(d.receipt):null};
+      receipt:d.receipt&&okId(String(d.receipt))?String(d.receipt):null};
     if(validDate(d.dueDate))e.dueDate=d.dueDate;
     return e;
   }
   function setBook(t,s){['name','kind','color','budget','contract','cats'].forEach(function(k){t[k]=s[k]}); if(s.contractCat)t.contractCat=s.contractCat; else delete t.contractCat}
   function setExp(t,s){t.book=s.book; EK.forEach(function(k){if(s[k]===undefined)delete t[k]; else t[k]=s[k]})}
   // ids get the account's suffix so two people's sections never clash on the server
-  function scoped(id){var u=acct(), tag='-'+u.id.replace(/-/g,'').slice(0,8); id=IDRE.test(String(id))?String(id):uid(); return id.slice(-tag.length)===tag?id:id.slice(0,48)+tag}
+  function scoped(id){var u=acct(), tag='-'+u.id.replace(/-/g,'').slice(0,8); id=okId(String(id))?String(id):uid(); return id.slice(-tag.length)===tag?id:id.slice(0,48)+tag}
   function remapLocal(){
     var m={}; state.books.forEach(function(b){m[b.id]=scoped(b.id); b.id=m[b.id]});
     state.expenses.forEach(function(e){e.book=m[e.book]||e.book; e.id=scoped(e.id)});
@@ -427,6 +441,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       cloud.sb.auth.onAuthStateChange(function(ev,s){
         var u=s&&s.user?{id:s.user.id,email:s.user.email||''}:null, was=cloud.user&&cloud.user.id;
         cloud.user=u;
+        // a session that ended elsewhere (password change, sign-out on all devices) needs a fresh sign-in
+        cloud.expired=!u&&!!cloud.linked&&(ev==='SIGNED_OUT'||(ev==='INITIAL_SESSION'&&navigator.onLine));
         if(ev==='PASSWORD_RECOVERY')setTimeout(newPassword,400);
         // supabase-js asks not to call it from inside this callback
         if(u&&u.id!==was)setTimeout(linkAccount,0);
@@ -438,11 +454,12 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var u=cloud.user; if(!u)return;
     if(cloud.linked&&cloud.linked.id===u.id){sync(); return}
     if(cloud.linked){ // a different account was on this device: start clean
+      if(dirtyCount()&&!window.confirm('في تغييرات من حساب '+cloud.linked.email+' ما انرفعت للسحابة، وبتنمسح من هذا الجهاز لو دخلت بحساب ثاني. تكمل؟')){cloud.sb.auth.signOut({scope:'local'}); return}
       wipeLocal(); state.books=[]; state.expenses=[]; cloud.replace=true;
     }else{
       cloud.linked=u; remapLocal(); cloud.replace=!state.expenses.length;
     }
-    cloud.linked=u; cloud.snap={b:{},e:{}}; cloud.meta={}; cloud.members={}; cloud.up={}; cloud.cursor=null; cloud.first=true;
+    cloud.expired=false; cloud.linked=u; cloud.snap={b:{},e:{}}; cloud.meta={}; cloud.members={}; cloud.up={}; cloud.cursor=null; cloud.first=true;
     saveLocal(); cloudSave(); render(); sync();
   }
   function cloudKick(){if(!acct())return; clearTimeout(cloud.timer); cloud.timer=setTimeout(sync,1200)}
@@ -450,41 +467,69 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(!cloud.sb||!cloud.user)return Promise.resolve(false);
     if(cloud.busy){cloud.again=true; return cloud.busy}
     clearTimeout(cloud.timer); cloud.err=''; syncUI();
-    var run=cloud.first?pull().then(push):push().then(pull);
+    var perr=null, keep=function(e){perr=perr||e};
+    var run=(cloud.first?pull().then(function(){return push(keep)}):push(keep).then(pull)).then(function(){if(perr)throw perr});
     cloud.busy=run.then(function(){cloud.first=false; cloud.last=Date.now(); cloudSave(); return true},function(e){cloud.err=errKind(e); cloudSave(); return false})
       .then(function(ok){cloud.busy=false; syncUI(); if(cloud.again){cloud.again=false; setTimeout(sync,50)} return ok});
     return cloud.busy;
   }
   function errKind(e){var m=String((e&&(e.message||e.error_description))||e||''); return /fetch|network|Failed|load/i.test(m)?'net':'server'}
   function ok(r){if(r&&r.error)throw r.error; return r&&r.data}
-  function push(){
+  function push(keep){
     var sb=cloud.sb, me=cloud.user.id, snap=cloud.snap, hb={}, have={};
     state.books.forEach(function(b){hb[b.id]=1}); state.expenses.forEach(function(e){have[e.id]=1});
-    var bUp=[], bJ={}, eUp=[], eJ={};
-    state.books.forEach(function(b){if(ro(b.id))return; var j=bj(b); if(snap.b[b.id]!==j){bUp.push({id:b.id,data:bookData(b)}); bJ[b.id]=j}});
-    state.expenses.forEach(function(e){if(ro(e.book)||!hb[e.book])return; var j=ej(e); if(snap.e[e.id]!==j){eUp.push({id:e.id,book_id:e.book,data:expData(e),deleted:false}); eJ[e.id]=j}});
+    var p=Promise.resolve();
+    function step(fn){p=p.then(fn).catch(function(e){
+      // the server refused (e.g. access was removed): stop retrying and let the next pull restore its copy
+      if(e&&(e.code==='42501'||e.code==='23503'||e.code==='gone'))cloud.cursor=null;
+      keep(e);
+    })}
+    state.books.forEach(function(b){
+      if(ro(b.id))return; var j=bj(b); if(snap.b[b.id]===j)return;
+      var known=snap.b[b.id]!==undefined||!mine(b.id);
+      step(function(){
+        // a book the server already has is only updated, so one deleted by its owner never comes back
+        var q=known?sb.from('books').update({data:bookData(b)}).eq('id',b.id).select('id'):sb.from('books').upsert({id:b.id,data:bookData(b)}).select('id');
+        return q.then(ok).then(function(rows){
+          if(known&&!(rows||[]).length){snap.b[b.id]=j; throw {code:'gone'}}
+          snap.b[b.id]=j; if(!cloud.meta[b.id])cloud.meta[b.id]={owner:me,role:'owner',email:cloud.user.email}; cloudSave();
+        });
+      });
+    });
+    var groups={};
+    function add(bid,row,j){(groups[bid]=groups[bid]||[]).push([row,j])}
+    state.expenses.forEach(function(e){if(ro(e.book)||!hb[e.book])return; var j=ej(e); if(snap.e[e.id]!==j)add(e.book,{id:e.id,book_id:e.book,data:expData(e),deleted:false},j)});
     Object.keys(snap.e).forEach(function(id){
       if(have[id])return; var bid=JSON.parse(snap.e[id])[0];
-      if(hb[bid]&&!ro(bid)){eUp.push({id:id,book_id:bid,data:{},deleted:true}); eJ[id]=null}
+      if(hb[bid]&&!ro(bid))add(bid,{id:id,book_id:bid,data:{},deleted:true},null);
     });
-    var gone=Object.keys(snap.b).filter(function(id){return !hb[id]});
-    var p=Promise.resolve();
-    if(bUp.length)p=p.then(function(){return sb.from('books').upsert(bUp)}).then(ok).then(function(){Object.keys(bJ).forEach(function(id){snap.b[id]=bJ[id]; if(!cloud.meta[id])cloud.meta[id]={owner:me,role:'owner',email:cloud.user.email}}); cloudSave()});
-    for(var i=0;i<eUp.length;i+=500)(function(part){
-      p=p.then(function(){return sb.from('expenses').upsert(part)}).then(ok).then(function(){part.forEach(function(r){if(eJ[r.id]===null)delete snap.e[r.id]; else snap.e[r.id]=eJ[r.id]}); cloudSave()});
-    })(eUp.slice(i,i+500));
-    gone.forEach(function(id){
-      p=p.then(function(){return mine(id)?sb.from('books').delete().eq('id',id):sb.from('book_members').delete().eq('book_id',id).eq('user_id',me)}).then(ok).then(function(){
+    Object.keys(groups).forEach(function(bid){
+      var g=groups[bid];
+      for(var i=0;i<g.length;i+=500)(function(part){
+        step(function(){
+          if(!snap.b[bid])return; // its book isn't on the server yet
+          return sb.from('expenses').upsert(part.map(function(x){return x[0]})).then(ok).then(function(){part.forEach(function(x){if(x[1]===null)delete snap.e[x[0].id]; else snap.e[x[0].id]=x[1]}); cloudSave()},function(e){
+            if(e&&e.code==='42501')part.forEach(function(x){if(x[1]===null)delete snap.e[x[0].id]; else snap.e[x[0].id]=x[1]});
+            throw e;
+          });
+        });
+      })(g.slice(i,i+500));
+    });
+    Object.keys(snap.b).filter(function(id){return !hb[id]}).forEach(function(id){
+      step(function(){return (mine(id)?sb.from('books').delete().eq('id',id):sb.from('book_members').delete().eq('book_id',id).eq('user_id',me)).then(ok).then(function(){
         delete snap.b[id]; delete cloud.meta[id]; delete cloud.members[id];
-        Object.keys(snap.e).forEach(function(k){if(JSON.parse(snap.e[k])[0]===id)delete snap.e[k]}); cloudSave()});
+        Object.keys(snap.e).forEach(function(k){if(JSON.parse(snap.e[k])[0]===id)delete snap.e[k]}); cloudSave()})});
     });
-    return p.then(pushReceipts);
+    step(pushReceipts);
+    return p;
   }
   function pushReceipts(){
-    var todo=state.expenses.filter(function(e){return e.receipt&&cloud.up[e.receipt]!==e.book&&!ro(e.book)&&cloud.snap.b[e.book]}).slice(0,8);
+    var todo=state.expenses.filter(function(e){return e.receipt&&cloud.up[e.receipt]!==e.book&&!ro(e.book)&&cloud.snap.b[e.book]}), sent=0;
     return todo.reduce(function(p,e){return p.then(function(){
+      if(sent>=12)return;
       return rget(e.receipt).then(function(d){
         if(!d)return;
+        sent++;
         return fetch(d).then(function(r){return r.blob()}).then(function(blob){return cloud.sb.storage.from('receipts').upload(e.book+'/'+e.receipt+'.jpg',blob,{upsert:true,contentType:'image/jpeg'})})
           .then(ok).then(function(){cloud.up[e.receipt]=e.book; cloudSave()});
       });
@@ -494,7 +539,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var sb=cloud.sb, me=cloud.user.id, snap=cloud.snap, changed=false;
     return Promise.all([sb.from('books').select('id,owner,owner_email,data'),sb.from('book_members').select('book_id,user_id,email,role')]).then(function(r){
       var rows=ok(r[0])||[], mem=ok(r[1])||[];
-      if(cloud.replace&&rows.length){state.books=[]; state.expenses=[]; changed=true}
+      if(cloud.replace&&rows.length&&!state.expenses.length){state.books=[]; state.expenses=[]; changed=true}
       cloud.replace=false;
       var role={}, members={}, seen={}, fresh=[];
       mem.forEach(function(m){if(m.user_id===me)role[m.book_id]=m.role==='editor'?'editor':'viewer'; else (members[m.book_id]=members[m.book_id]||[]).push({user_id:m.user_id,email:String(m.email||''),role:m.role==='editor'?'editor':'viewer'})});
@@ -519,20 +564,22 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       return Promise.all(jobs);
     }).then(function(lists){
       var idx={}; state.expenses.forEach(function(e){idx[e.id]=e});
-      var max=cloud.cursor;
+      var max=cloud.cursor, held=null;
       lists.forEach(function(list){list.forEach(function(row){
         if(!max||row.updated_at>max)max=row.updated_at;
         var id=String(row.id), cur=idx[id], bid=String(row.book_id);
         if(!book(bid))return;
         if(!cur&&snap.e[id]!==undefined&&!ro(bid))return; // deleted here, not pushed yet
         var dirty=cur&&!ro(bid)&&(snap.e[id]===undefined?!cloud.first:snap.e[id]!==ej(cur));
-        if(dirty||(cur&&cur===form.editing))return;
+        if(cur&&cur===form.editing&&!dirty){if(!held||row.updated_at<held)held=row.updated_at; return}
+        if(dirty)return;
         if(row.deleted){if(cur){state.expenses=state.expenses.filter(function(e){return e!==cur}); delete idx[id]; changed=true} delete snap.e[id]; return}
         var ne=cleanExp(id,bid,row.data); if(!ne)return;
+        if(ne.receipt&&!cloud.up[ne.receipt])cloud.up[ne.receipt]=bid;
         if(!cur){state.expenses.push(ne); idx[id]=ne; changed=true} else if(ej(cur)!==ej(ne)){setExp(cur,ne); changed=true}
         snap.e[id]=ej(idx[id]);
       })});
-      cloud.cursor=max;
+      cloud.cursor=held&&(!max||held<max)?held:max;
       if(!state.books.length){state.books.push({id:scoped('personal'),name:'مصاريفي الشخصية',kind:'monthly',color:1,budget:0,contract:0,cats:tpl('monthly')}); changed=true}
       if(changed){saveLocal(); softRender()}
       cloudSave();
@@ -609,16 +656,25 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     cloud.sb.auth.updateUser({password:p}).then(function(r){toast(r.error?authMsg(r.error):'تم تغيير كلمة السر')});
   }
   function signOut(btn){
+    if(!cloud.sb){toast('ما في اتصال بالإنترنت. اتصل وجرب مرة ثانية.'); return}
     btn.disabled=true;
-    sync().then(function(done){
-      if(!done&&!window.confirm('ما قدرت أرفع آخر التغييرات للسحابة. لو طلعت الحين بتضيع من هذا الجهاز. تبي تطلع؟')){btn.disabled=false; return}
-      return cloud.sb.auth.signOut().catch(function(){}).then(function(){wipeLocal(); try{localStorage.removeItem('masrofi.auth')}catch(e){} setTimeout(function(){location.reload()},150)});
+    var tries=0;
+    function drain(){
+      return sync().then(function(){return receiptsPending()}).then(function(r){
+        var left=dirtyCount()+r;
+        if((left||cloud.again||cloud.busy)&&++tries<6)return new Promise(function(res){setTimeout(res,400)}).then(drain);
+        return left;
+      });
+    }
+    drain().then(function(left){
+      if(left&&!window.confirm('في '+left+' تغيير أو صورة ما انرفعت للسحابة. لو طلعت الحين بتضيع من هذا الجهاز. تبي تطلع؟')){btn.disabled=false; return}
+      return cloud.sb.auth.signOut({scope:'local'}).catch(function(){}).then(function(){wipeLocal(); try{localStorage.removeItem('masrofi.auth')}catch(e){} setTimeout(function(){location.reload()},150)});
     });
   }
   function shareBook(bid,btn){
     var em=V.querySelector('[data-shemail="'+bid+'"]'), rl=V.querySelector('[data-shrole="'+bid+'"]'), email=(em.value||'').trim().toLowerCase();
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){toast('اكتب إيميل صحيح'); em.focus(); return}
-    if(!cloud.user){toast('سجّل دخول أول'); return}
+    if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
     btn.disabled=true;
     sync().then(function(){
       if(!cloud.snap.b[bid])throw new Error('push');
@@ -631,6 +687,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     }).catch(function(){toast('ما قدرت أشارك القسم. تأكد من الاتصال وجرب مرة ثانية.')}).then(function(){btn.disabled=false; render()});
   }
   function unshare(bid,uidv){
+    if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
     cloud.sb.from('book_members').delete().eq('book_id',bid).eq('user_id',uidv).then(function(r){
       if(r.error){toast('ما قدرت ألغي المشاركة'); return}
       cloud.members[bid]=(cloud.members[bid]||[]).filter(function(m){return m.user_id!==uidv}); cloudSave(); toast('تم إلغاء المشاركة'); render();
@@ -638,10 +695,11 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
   function accountCard(){
     if(!CLOUD.url)return '';
-    var u=acct();
+    var u=cloud.expired?null:acct();
     if(!u)return '<section class="card" id="acct"><h3>الحساب والمزامنة<span class="tag plain">غير مسجل</span></h3>'+
       '<p class="note">سجّل دخول عشان تنحفظ بياناتك في السحابة بشكل آمن، وتوصلها من أي جهاز، وتشارك مشروع مع أشخاص تختارهم. بياناتك الحالية بتنرفع لحسابك.</p>'+
-      '<div class="field"><label for="auEmail">الإيميل</label><input id="auEmail" type="email" autocomplete="email" inputmode="email" dir="ltr" maxlength="120"></div>'+
+      (cloud.expired?'<p class="err">انتهت جلستك. سجّل دخول مرة ثانية، وتغييراتك في هذا الجهاز بتنرفع بعدها.</p>':'')+
+      '<div class="field"><label for="auEmail">الإيميل</label><input id="auEmail" type="email" autocomplete="email" inputmode="email" dir="ltr" maxlength="120" value="'+(cloud.expired?esc(cloud.linked.email):'')+'"></div>'+
       '<div class="field"><label for="auPass">كلمة السر</label><input id="auPass" type="password" autocomplete="current-password" dir="ltr" placeholder="8 أحرف أو أكثر" maxlength="72"></div><div class="err" id="auErr"></div>'+
       '<div class="row"><button class="btn" type="button" id="auIn">دخول</button><button class="btn soft" type="button" id="auUp">حساب جديد</button></div>'+
       '<button class="btn ghost" type="button" id="auForgot">نسيت كلمة السر</button><p class="note" id="syncSt"></p></section>';
@@ -786,7 +844,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   // ---------- views ----------
   function render(){
     Array.prototype.forEach.call(document.querySelectorAll('.nav [data-go]'),function(b){if(b.dataset.go===ui.view)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current')});
-    var gate=!!CLOUD.url&&!acct(); document.querySelector('.nav').hidden=gate;
+    var gate=!!CLOUD.url&&(!acct()||cloud.expired); document.querySelector('.nav').hidden=gate;
     if(gate){$('fab').hidden=true; $('view').innerHTML=gateView(); return}
     $('fab').hidden=ui.view==='settings'||ui.view==='reports'||!state.books.length;
     $('view').innerHTML=ui.view==='home'?homeView():ui.view==='book'?bookView():ui.view==='reports'?reportsView():settingsView();
@@ -1047,19 +1105,23 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     ev.preventDefault(); if(form.ro)return;
     var amt=parseAmount($('fAmount').value);
     if(!(amt>0)){$('fErr').textContent='اكتب مبلغ أكبر من صفر.'; return}
-    var date=$('fDate').value; if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){$('fErr').textContent='اختر التاريخ.'; return}
-    var wasEdit=!!form.editing, e=form.editing||{id:uid(),created:Date.now(),receipt:null};
+    var date=$('fDate').value; if(!validDate(date)){$('fErr').textContent='اختر التاريخ.'; return}
+    if(!book(form.book)||ro(form.book)){$('fErr').textContent='هذا القسم ما عاد متاح لك. اختر قسم ثاني.'; chipsBooks(); return}
+    var wasEdit=!!form.editing, e=form.editing||{id:uid(),created:Date.now(),receipt:null}, moved=null;
+    // moving to another section: a new entry there, so people who only see the old section get a clean delete
+    if(wasEdit&&acct()&&e.book!==form.book){moved=e; e=Object.assign({},e,{id:scoped(uid())})}
     if(wasEdit&&e.status==='due'&&form.status==='paid'&&!e.dueDate&&e.date!==date)e.dueDate=e.date;
     e.book=form.book; e.cat=form.cat[form.book]; e.amount=amt; e.date=date; e.status=form.status;
     e.method=$('fMethod').value; e.payee=$('fPayee').value.trim(); e.ref=$('fRef').value.trim(); e.note=$('fNote').value.trim();
-    var after=Promise.resolve();
+    var after=moved&&e.receipt&&!form.photoChanged?receiptSrc(moved).then(function(){},function(){}):Promise.resolve();
     if(form.photoChanged){
       if(e.receipt){rdel(e.receipt); e.receipt=null}
       if(form.photo){var rid='r'+uid(); after=rput(rid,form.photo).then(function(){e.receipt=rid},function(){toast('ما قدرت أحفظ الصورة في هذا المتصفح.')})}
     }
     $('fSave').disabled=true;
     after.then(function(){
-      if(!wasEdit)state.expenses.push(e);
+      if(moved)state.expenses=state.expenses.filter(function(x){return x!==moved});
+      if(!wasEdit||moved)state.expenses.push(e);
       if(save())toast(wasEdit?'تم التعديل':(e.status==='due'?'تم تسجيل الدفعة المستحقة':'تم الحفظ'));
       var b=book(e.book); if(ui.view==='book'&&b&&b.kind==='monthly'&&e.book===ui.book)ui.month=firstOfMonth(new Date(e.date+'T12:00:00'));
       closeForm(); render();
@@ -1083,7 +1145,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if((x=t.closest('[data-edit]'))){var e2=state.expenses.find(function(r){return r.id===x.dataset.edit}); if(e2)openForm(e2); return}
     if((x=t.closest('[data-open]'))){ui.book=x.dataset.open; ui.q=''; ui.status='all'; ui.view='book'; render(); window.scrollTo(0,0); return}
     if((x=t.closest('[data-go]'))){go(x.dataset.go); return}
-    if((x=t.closest('[data-st]'))){ui.status=x.dataset.st; Array.prototype.forEach.call(x.parentNode.children,function(y){y.setAttribute('aria-pressed',y===x)}); $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project'); return}
+    if((x=t.closest('[data-st]'))&&book(ui.book)){ui.status=x.dataset.st; Array.prototype.forEach.call(x.parentNode.children,function(y){y.setAttribute('aria-pressed',y===x)}); $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project'); return}
     if((x=t.closest('[data-q]'))){rpQuick(x.dataset.q); render(); return}
     if((x=t.closest('[data-k]'))&&x.closest('#newKind')){ui.newKind=x.dataset.k; var nm=$('newName').value,bd=$('newBudget').value; render(); $('newName').value=nm; $('newBudget').value=bd; return}
     if((x=t.closest('[data-delcat]'))){x.closest('.setrow').nextElementSibling.hidden=false; x.hidden=true; return}
@@ -1134,7 +1196,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     else if(act==='rmpin'){state.pin=''; save(); render(); toast('تم إلغاء القفل')}
   });
   V.addEventListener('mouseover',function(ev){var x=ev.target.closest('.hit'); if(x)showTip(x)});
-  V.addEventListener('input',function(ev){if(ev.target.id==='search'){ui.q=ev.target.value; $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project')}});
+  V.addEventListener('input',function(ev){if(ev.target.id==='search'&&book(ui.book)){ui.q=ev.target.value; $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project')}});
   V.addEventListener('change',function(ev){
     var t=ev.target, d=t.dataset, v=(t.value||'').trim();
     if(t.id==='search'||t.id==='auEmail'||t.id==='auPass'||d.shemail||d.shrole)return;
@@ -1144,11 +1206,11 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(t.id==='catBookSel'){ui.catBook=v; render(); return}
     if(t.id==='currency'){state.currency=v; save(); toast('تم تغيير العملة'); return}
     if(t.id==='bkFile'){var f=t.files&&t.files[0]; if(f){var r=new FileReader(); r.onload=function(){$('bkText').value=r.result; toast('الملف جاهز، اضغط «استرجاع»')}; r.readAsText(f)} return}
-    if((d.bname||d.bbudget||d.bcontract)&&ro(d.bname||d.bbudget||d.bcontract))return;
+    var tb=d.bname||d.bbudget||d.bcontract; if(tb&&(!book(tb)||ro(tb)))return;
     if(d.bname){var b=book(d.bname); if(!v){t.value=b.name; return} b.name=v}
     else if(d.bbudget){var n=parseAmount(v); book(d.bbudget).budget=n>0?n:0}
     else if(d.bcontract){var n2=parseAmount(v); book(d.bcontract).contract=n2>0?n2:0}
-    else if(d.catname){var c=catOf(book(ui.catBook),d.catname); if(!v){t.value=c.n; return} c.n=v}
+    else if(d.catname){if(!book(ui.catBook))return; var c=catOf(book(ui.catBook),d.catname); if(!v){t.value=c.n; return} c.n=v}
     else if(t.hasAttribute('data-payee')){var old=t.getAttribute('data-payee'); if(!v){t.value=old; return} state.expenses.forEach(function(e){if(e.payee===old&&!ro(e.book))e.payee=v})}
     else return;
     save(); toast('تم الحفظ'); render();
@@ -1193,11 +1255,14 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function restore(){
     var d; try{d=JSON.parse($('bkText').value)}catch(e){$('bkErr').textContent='النص أو الملف غير صالح.'; return}
     var list=Array.isArray(d)?d:(d&&d.expenses); if(!Array.isArray(list)){$('bkErr').textContent='ما لقيت عمليات في هذه النسخة.'; return}
-    var bmap={};
-    function newId(id,pre){id=id==null?'':String(id); return acct()?scoped(id||uid()):(IDRE.test(id)?id:pre+uid())}
+    var bmap=Object.create(null);
+    function newId(id,pre){id=id==null?'':String(id); return acct()?scoped(id||uid()):(okId(id)?id:pre+uid())}
+    // a section someone else shared with you: it stays theirs, so the backup doesn't copy it
+    function foreign(id){return !!acct()&&/-[0-9a-f]{8}$/.test(id)&&scoped(id)!==id}
     if(!Array.isArray(d)&&Array.isArray(d.books)){
       d.books.forEach(function(nb){
         if(!nb||typeof nb!=='object'||nb.id==null)return;
+        if(foreign(String(nb.id))){bmap[String(nb.id)]=null; return}
         var nid=newId(nb.id,'b'); bmap[String(nb.id)]=nid;
         var c=cleanBook(nid,nb); if(!c)return;
         var b=book(nid); if(b&&ro(b.id))return;
@@ -1212,7 +1277,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     list.forEach(function(e){
       if(!e||typeof e!=='object')return;
       var id=newId(e.id,'x'); if(have[id])return;
-      var ob=e.book==null?'':String(e.book), bid=bmap[ob]||(acct()?scoped(ob||'personal'):ob);
+      var ob=e.book==null?'':String(e.book); if(bmap[ob]===null||foreign(ob))return;
+      var bid=bmap[ob]||(acct()?scoped(ob||'personal'):ob);
       if(!book(bid)||ro(bid))bid=wb[0].id;
       var ne=cleanExp(id,bid,Object.assign({},e,{receipt:null})); if(!ne)return;
       var b=book(bid); if(!b.cats.some(function(c){return c.id===ne.cat}))ne.cat=moveTarget(b,'').id;
