@@ -707,6 +707,13 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       '<p class="note">مسجل بـ <bdi>'+esc(u.email)+'</bdi>. بياناتك محفوظة في حسابك على السحابة، وما يشوفها إلا أنت واللي تشاركهم.</p><p class="note" id="syncSt"></p>'+
       '<div class="row"><button class="btn soft" type="button" id="auSync">مزامنة الآن</button><button class="btn ghost" type="button" id="auOut">تسجيل خروج</button></div></section>';
   }
+  function appUrl(){return /^https?:$/.test(location.protocol)&&!/claude|localhost|127\.0/.test(location.host)?location.origin+location.pathname:'https://masrofi.bythani.com/'}
+  function shareApp(){
+    var url=appUrl(), text='مصروفي: تطبيق نسجل فيه مصاريفنا ونتشارك المشاريع. سوّ حساب من هذا الرابط:';
+    var copy=function(){try{navigator.clipboard.writeText(url).then(function(){toast('تم نسخ الرابط')},function(){$('shareUrl').select(); toast('انسخ الرابط من المربع')})}catch(e){$('shareUrl').select(); toast('انسخ الرابط من المربع')}};
+    if(navigator.share)navigator.share({title:'مصروفي',text:text,url:url}).catch(function(e){if(!e||e.name!=='AbortError')copy()});
+    else copy();
+  }
   function gateView(){
     return '<header class="top"><div><h1>مصروفي</h1><p>سجّل دخول عشان تفتح حسابك</p></div></header>'+accountCard()+
       '<p class="note" style="text-align:center">بياناتك محمية: ما يشوفها إلا صاحب الحساب واللي يشاركهم.</p>';
@@ -913,6 +920,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var recent=state.expenses.slice().sort(function(a,b){return (b.created||0)-(a.created||0)}).slice(0,6);
     h+='<section class="card"><h3>آخر العمليات'+(recent.length?'<button class="link" type="button" data-go="book">عرض الكل</button>':'')+'</h3>'+
       (recent.length?'<div class="group">'+recent.map(function(e){return itemHtml(e,true)}).join('')+'</div>':'<div class="empty"><b>ابدأ بأول عملية</b><span>اضغط «عملية جديدة» تحت. وتقدر تضيف مشاريع جديدة من «الأقسام».</span></div>')+'</section>';
+    h+='<section class="card"><h3>شارك التطبيق</h3><p class="note">أرسل الرابط للعايلة. كل واحد يسوي حساب، وبياناتك ما يشوفها إلا اللي تشاركهم قسم من «الإعدادات».</p>'+
+      '<div class="addrow"><input id="shareUrl" dir="ltr" readonly value="'+esc(appUrl())+'" aria-label="رابط التطبيق"><button type="button" class="mini" id="shareApp">مشاركة</button></div></section>';
     return h;
   }
 
@@ -1181,6 +1190,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(t.id==='auForgot'){forgot(); return}
     if(t.id==='auSync'){sync().then(function(r){if(r)toast('تمت المزامنة')}); return}
     if(t.id==='auOut'){signOut(t); return}
+    if(t.id==='shareApp'){shareApp(); return}
+    if(t.id==='shareUrl'){t.select(); return}
     if(t.id==='rpPdf'){makePdf(t); return}
     if(t.id==='rpXlsx'){makeXlsx(t); return}
     if(t.id==='bkSave'){backupFile(); return}
