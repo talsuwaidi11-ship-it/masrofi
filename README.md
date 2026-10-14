@@ -8,6 +8,6 @@
 
 ## التشغيل على الايفون
 
-افتح https://talsuwaidi11-ship-it.github.io/masrofi/ في Safari، ثم زر المشاركة ← «إضافة إلى الشاشة الرئيسية».
+افتح https://masrofi.bythani.com في Safari، ثم زر المشاركة ← «إضافة إلى الشاشة الرئيسية».
 
 ملف واحد فقط (`index.html`) بدون أي خطوات بناء.
