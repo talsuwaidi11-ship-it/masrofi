@@ -428,7 +428,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
         if(ev==='PASSWORD_RECOVERY')setTimeout(newPassword,400);
         // supabase-js asks not to call it from inside this callback
         if(u&&u.id!==was)setTimeout(linkAccount,0);
-        if(ui.view==='settings')softRender();
+        softRender();
       });
     }).catch(function(){cloud.err='net'; syncUI()});
   }
@@ -647,6 +647,10 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       '<p class="note">مسجل بـ <bdi>'+esc(u.email)+'</bdi>. بياناتك محفوظة في حسابك على السحابة، وما يشوفها إلا أنت واللي تشاركهم.</p><p class="note" id="syncSt"></p>'+
       '<div class="row"><button class="btn soft" type="button" id="auSync">مزامنة الآن</button><button class="btn ghost" type="button" id="auOut">تسجيل خروج</button></div></section>';
   }
+  function gateView(){
+    return '<header class="top"><div><h1>مصروفي</h1><p>سجّل دخول عشان تفتح حسابك</p></div></header>'+accountCard()+
+      '<p class="note" style="text-align:center">بياناتك محمية: ما يشوفها إلا صاحب الحساب واللي يشاركهم.</p>';
+  }
   function shareBox(b){
     if(!CLOUD.url||!acct())return '';
     var m=cloud.meta[b.id];
@@ -780,6 +784,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   // ---------- views ----------
   function render(){
     Array.prototype.forEach.call(document.querySelectorAll('.nav [data-go]'),function(b){if(b.dataset.go===ui.view)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current')});
+    var gate=!!CLOUD.url&&!acct(); document.querySelector('.nav').hidden=gate;
+    if(gate){$('fab').hidden=true; $('view').innerHTML=gateView(); return}
     $('fab').hidden=ui.view==='settings'||ui.view==='reports'||!state.books.length;
     $('view').innerHTML=ui.view==='home'?homeView():ui.view==='book'?bookView():ui.view==='reports'?reportsView():settingsView();
     if(ui.view==='reports')rpStats();
@@ -794,7 +800,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var lastSame=P.filter(function(e){return e.date.slice(0,7)===lk&&e.date<=lastEnd});
     var tot=sum(thisM), ltot=sum(lastSame);
     var delta=ltot?Math.round((tot-ltot)/ltot*100):null;
-    var h='<header class="top"><div><h1>مصروفي</h1><p>'+DAYS[now.getDay()]+' '+dlabel(t)+' · بياناتك في جهازك فقط</p></div>'+(state.pin?'<button class="pillbtn" type="button" data-act="lock">قفل</button>':'')+'</header>';
+    var h='<header class="top"><div><h1>مصروفي</h1><p>'+DAYS[now.getDay()]+' '+dlabel(t)+(acct()?' · محفوظة في حسابك':' · بياناتك في جهازك فقط')+'</p></div>'+(state.pin?'<button class="pillbtn" type="button" data-act="lock">قفل</button>':'')+'</header>';
 
     h+='<section class="hero"><div><div class="lbl">صرفت في '+MONTHS[now.getMonth()]+' (كل الأقسام)</div><div class="big"><span class="num">'+fmt(tot)+'</span><small>'+esc(state.currency)+'</small></div></div>';
     if(delta!==null) h+='<div class="delta">'+(delta>0?'أعلى':'أقل')+' بـ <b class="num">'+Math.abs(delta)+'%</b> من نفس الفترة في '+MONTHS[lastM.getMonth()]+'</div>';
