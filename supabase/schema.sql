@@ -26,6 +26,17 @@ create table if not exists public.expenses (
   updated_at timestamptz not null default now()
 );
 create index if not exists expenses_book_idx on public.expenses(book_id, updated_at);
+create index if not exists expenses_updated_idx on public.expenses(updated_at);
+create index if not exists books_owner_idx on public.books(owner);
+create index if not exists book_members_user_idx on public.book_members(user_id);
+
+-- remembers who owned a deleted section, so nobody else can take over its id (and its old receipt photos)
+create table if not exists public.deleted_books (
+  id text primary key,
+  owner uuid not null
+);
+alter table public.deleted_books enable row level security;
+revoke all on public.deleted_books from anon, authenticated;
 
 create or replace function public.touch() returns trigger language plpgsql as $$
 begin new.updated_at = now(); return new; end $$;
@@ -51,15 +62,28 @@ create trigger books_owner before insert or update on public.books for each row 
 
 -- access helpers (security definer so policies don't recurse)
 create or replace function public.can_read(b text) returns boolean
-language sql security definer stable set search_path = public as $$
-  select exists(select 1 from books where id = b and owner = auth.uid())
-      or exists(select 1 from book_members where book_id = b and user_id = auth.uid())
+language sql security definer stable set search_path = '' as $$
+  select exists(select 1 from public.books where id = b and owner = auth.uid())
+      or exists(select 1 from public.book_members where book_id = b and user_id = auth.uid())
 $$;
 create or replace function public.can_write(b text) returns boolean
-language sql security definer stable set search_path = public as $$
-  select exists(select 1 from books where id = b and owner = auth.uid())
-      or exists(select 1 from book_members where book_id = b and user_id = auth.uid() and role = 'editor')
+language sql security definer stable set search_path = '' as $$
+  select exists(select 1 from public.books where id = b and owner = auth.uid())
+      or exists(select 1 from public.book_members where book_id = b and user_id = auth.uid() and role = 'editor')
 $$;
+create or replace function public.id_free(b text) returns boolean
+language sql security definer stable set search_path = '' as $$
+  select not exists(select 1 from public.deleted_books where id = b and owner <> auth.uid())
+$$;
+create or replace function public.books_tombstone() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.deleted_books(id, owner) values (old.id, old.owner)
+    on conflict (id) do update set owner = excluded.owner;
+  return old;
+end $$;
+drop trigger if exists books_tombstone on public.books;
+create trigger books_tombstone after delete on public.books for each row execute function public.books_tombstone();
 
 alter table public.books enable row level security;
 alter table public.book_members enable row level security;
@@ -68,7 +92,7 @@ alter table public.expenses enable row level security;
 drop policy if exists books_select on public.books;
 create policy books_select on public.books for select using (owner = auth.uid() or public.can_read(id));
 drop policy if exists books_insert on public.books;
-create policy books_insert on public.books for insert with check (owner = auth.uid());
+create policy books_insert on public.books for insert with check (owner = auth.uid() and public.id_free(id));
 drop policy if exists books_update on public.books;
 create policy books_update on public.books for update using (public.can_write(id)) with check (public.can_write(id));
 drop policy if exists books_delete on public.books;
@@ -91,17 +115,17 @@ create policy expenses_update on public.expenses for update using (public.can_wr
 
 -- owner shares a section with someone who already has an account
 create or replace function public.share_book(b text, member_email text, member_role text default 'viewer')
-returns text language plpgsql security definer set search_path = public as $$
+returns text language plpgsql security definer set search_path = '' as $$
 declare uid uuid;
 begin
-  if not exists(select 1 from books where id = b and owner = auth.uid()) then
+  if not exists(select 1 from public.books where id = b and owner = auth.uid()) then
     raise exception 'not_owner';
   end if;
   if member_role not in ('viewer','editor') then raise exception 'bad_role'; end if;
   select id into uid from auth.users where lower(email) = lower(trim(member_email));
   if uid is null then return 'no_account'; end if;
   if uid = auth.uid() then return 'self'; end if;
-  insert into book_members(book_id, user_id, email, role) values (b, uid, lower(trim(member_email)), member_role)
+  insert into public.book_members(book_id, user_id, email, role) values (b, uid, lower(trim(member_email)), member_role)
     on conflict (book_id, user_id) do update set role = excluded.role;
   return 'ok';
 end $$;

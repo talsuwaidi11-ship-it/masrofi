@@ -387,20 +387,22 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function expData(e){var o={}; EK.forEach(function(k){if(e[k]!==undefined&&e[k]!==null)o[k]=e[k]}); return o}
   function bj(b){return JSON.stringify(bookData(b))}
   function ej(e){return JSON.stringify([e.book,expData(e)])}
+  function fin(v){v=+v; return isFinite(v)&&v>0?Math.round(v*100)/100:0}
+  function validDate(s){return DRE.test(s||'')&&ymd(new Date(s+'T12:00:00'))===s}
   function cleanBook(id,d){
     if(!IDRE.test(id)||!d||typeof d!=='object')return null;
     var kind=d.kind==='monthly'?'monthly':'project', n8=function(v){return Math.min(8,Math.max(1,Math.round(+v)||8))};
     var cats=(Array.isArray(d.cats)?d.cats:[]).filter(function(c){return c&&IDRE.test(String(c.id))}).slice(0,80).map(function(c){return {id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:n8(c.c),fixed:!!c.fixed}});
-    var b={id:id,name:String(d.name||'قسم').slice(0,30),kind:kind,color:n8(d.color),budget:Math.max(0,+d.budget||0),contract:Math.max(0,+d.contract||0),cats:cats.length?cats:tpl(kind)};
+    var b={id:id,name:String(d.name||'قسم').slice(0,30),kind:kind,color:n8(d.color),budget:fin(d.budget),contract:fin(d.contract),cats:cats.length?cats:tpl(kind)};
     if(d.contractCat&&IDRE.test(String(d.contractCat)))b.contractCat=String(d.contractCat);
     return b;
   }
   function cleanExp(id,bid,d){
-    if(!IDRE.test(id)||!IDRE.test(bid)||!d||!(+d.amount>0)||!DRE.test(d.date||''))return null;
-    var e={id:id,book:bid,cat:IDRE.test(String(d.cat))?String(d.cat):'other',amount:Math.round(+d.amount*100)/100,date:d.date,status:d.status==='due'?'due':'paid',
+    if(!IDRE.test(id)||!IDRE.test(bid)||!d||!fin(d.amount)||!validDate(d.date))return null;
+    var e={id:id,book:bid,cat:IDRE.test(String(d.cat))?String(d.cat):'other',amount:fin(d.amount),date:d.date,status:d.status==='due'?'due':'paid',
       method:String(d.method||'').slice(0,20),payee:String(d.payee||'').slice(0,60),ref:String(d.ref||'').slice(0,40),note:String(d.note||'').slice(0,140),created:+d.created||0,
       receipt:d.receipt&&IDRE.test(String(d.receipt))?String(d.receipt):null};
-    if(DRE.test(d.dueDate||''))e.dueDate=d.dueDate;
+    if(validDate(d.dueDate))e.dueDate=d.dueDate;
     return e;
   }
   function setBook(t,s){['name','kind','color','budget','contract','cats'].forEach(function(k){t[k]=s[k]}); if(s.contractCat)t.contractCat=s.contractCat; else delete t.contractCat}
@@ -796,7 +798,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var lastM=new Date(now.getFullYear(),now.getMonth()-1,1), lk=ym(lastM);
     var lastEnd=lk+'-'+String(Math.min(dayN,new Date(now.getFullYear(),now.getMonth(),0).getDate())).padStart(2,'0');
     var P=paid(state.expenses);
-    var thisM=P.filter(function(e){return e.date.slice(0,7)===mk&&e.date<=t});
+    var thisM=P.filter(function(e){return e.date.slice(0,7)===mk});
     var lastSame=P.filter(function(e){return e.date.slice(0,7)===lk&&e.date<=lastEnd});
     var tot=sum(thisM), ltot=sum(lastSame);
     var delta=ltot?Math.round((tot-ltot)/ltot*100):null;
@@ -832,7 +834,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
         var cp=sum(paid(rows).filter(function(e){return e.cat===contractCat(b)}));
         var basis=b.budget>0?b.budget:(b.contract>0?b.contract:0), pct=basis?(b.budget>0?sp:cp)/basis:0;
         var ringEl=basis?ring(pct,pct>1?'var(--bad)':cv(b.color),Math.round(pct*100)+'%'):ring(0,cv(b.color),'—');
-        var line=b.contract>0?'العقد: مدفوع <span class="num">'+compact(cp)+'</span> · باقي <span class="num">'+compact(b.contract-cp)+'</span>':(b.budget>0?'من ميزانية <span class="num">'+compact(b.budget)+'</span>':'<span class="num">'+rows.length+'</span> عملية');
+        var line=b.contract>0?'العقد: مدفوع <span class="num">'+compact(cp)+'</span> · '+(cp<=b.contract?'باقي':'زيادة')+' <span class="num">'+compact(b.contract-cp)+'</span>':(b.budget>0?'من ميزانية <span class="num">'+compact(b.budget)+'</span>':'<span class="num">'+rows.length+'</span> عملية');
         return '<button type="button" class="proj" data-open="'+b.id+'">'+ringEl+'<div><h4>'+esc(b.name)+'</h4><div class="amt num">'+fmt(sp)+'</div><div class="sub">'+line+(du?' · مستحق <span class="num">'+compact(du)+'</span>':'')+'</div></div></button>';
       }).join('')+'</div>';
     }
@@ -897,10 +899,10 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       if(!b.budget&&!b.contract) h+='<section class="card"><h3>الميزانية وقيمة العقد</h3><p class="note">حدد ميزانية المشروع أو قيمة عقد المقاول عشان تتابع المتبقي ونسبة الإنجاز.</p><button type="button" class="btn soft" data-act="editbook">تحديد الآن</button></section>';
       if(D2.length) h+='<section class="card"><h3>دفعات مستحقة<span class="tag warn num">'+fmt(sum(D2))+'</span></h3>'+duesHtml(D2)+'</section>';
       if(P2.length){
-        var dates=P2.map(function(e){return e.date}).sort(), start=new Date(dates[0]+'T12:00:00'), end=new Date();
-        var months=[], cur=new Date(start.getFullYear(),start.getMonth(),1);
-        while(cur<=end&&months.length<120){months.push(new Date(cur)); cur=new Date(cur.getFullYear(),cur.getMonth()+1,1)}
-        months=months.slice(-12); while(months.length<6){var f=months[0]; months.unshift(new Date(f.getFullYear(),f.getMonth()-1,1))}
+        var dates=P2.map(function(e){return e.date}).sort(), start=firstOfMonth(new Date(dates[0]+'T12:00:00'));
+        var end=firstOfMonth(new Date(Math.max(Date.now(),new Date(dates[dates.length-1]+'T12:00:00').getTime())));
+        var months=[], cur=end;
+        while(months.length<12&&(cur>=start||months.length<6)){months.unshift(cur); cur=new Date(cur.getFullYear(),cur.getMonth()-1,1)}
         var ss=b.cats.filter(function(c){return P2.some(function(e){return e.cat===c.id})}).map(function(c){
           return {name:c.n,color:cv(c.c),values:months.map(function(mm){var k=ym(mm); return sum(P2.filter(function(e){return e.cat===c.id&&e.date.slice(0,7)===k}))})};
         });
@@ -1031,7 +1033,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function closeForm(){$('formScrim').hidden=true; form.editing=null}
   $('fBooks').addEventListener('click',function(ev){var x=ev.target.closest('[data-fbook]'); if(!x||form.ro)return; form.book=x.dataset.fbook; chipsBooks(); chipsCats()});
   $('fCats').addEventListener('click',function(ev){var x=ev.target.closest('[data-fcat]'); if(!x||form.ro)return; form.cat[form.book]=x.dataset.fcat; chipsCats()});
-  $('fStatus').addEventListener('click',function(ev){var x=ev.target.closest('[data-v]'); if(x&&!form.ro)setStatus(x.dataset.v)});
+  $('fStatus').addEventListener('click',function(ev){var x=ev.target.closest('[data-v]'); if(!x||form.ro)return;
+    if(x.dataset.v==='paid'&&form.status==='due'&&$('fDate').value>today())$('fDate').value=today();
+    setStatus(x.dataset.v)});
   $('fFile').addEventListener('change',function(){
     var f=this.files&&this.files[0]; if(!f)return;
     compress(f).then(function(d){form.photo=d; form.photoChanged=true; setThumb(d)},function(){$('fErr').textContent='ما قدرت أقرأ الصورة. جرب صورة ثانية.'});
@@ -1045,6 +1049,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(!(amt>0)){$('fErr').textContent='اكتب مبلغ أكبر من صفر.'; return}
     var date=$('fDate').value; if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){$('fErr').textContent='اختر التاريخ.'; return}
     var wasEdit=!!form.editing, e=form.editing||{id:uid(),created:Date.now(),receipt:null};
+    if(wasEdit&&e.status==='due'&&form.status==='paid'&&!e.dueDate&&e.date!==date)e.dueDate=e.date;
     e.book=form.book; e.cat=form.cat[form.book]; e.amount=amt; e.date=date; e.status=form.status;
     e.method=$('fMethod').value; e.payee=$('fPayee').value.trim(); e.ref=$('fRef').value.trim(); e.note=$('fNote').value.trim();
     var after=Promise.resolve();
@@ -1156,20 +1161,22 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(window.crypto&&crypto.subtle&&window.TextEncoder) return crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)).then(function(b){return Array.prototype.map.call(new Uint8Array(b),function(x){return x.toString(16).padStart(2,'0')}).join('')});
     var h=0; for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0} return Promise.resolve('x'+h);
   }
-  function showLock(mode){lockMode=mode; entry=''; firstPin=''; $('lockTitle').textContent=mode==='set'?'اختر رمز من 4 أرقام':'أدخل الرمز'; $('lockNote').textContent=''; $('lockCancel').style.visibility=mode==='set'?'visible':'hidden'; dots(); $('lock').hidden=false}
+  function lockCover(on){Array.prototype.forEach.call(document.querySelectorAll('#app,.nav,#fab,#formScrim,#viewer'),function(x){if(on){x.setAttribute('inert',''); x.setAttribute('aria-hidden','true')}else{x.removeAttribute('inert'); x.removeAttribute('aria-hidden')}})}
+  function hideLock(){$('lock').hidden=true; lockCover(false)}
+  function showLock(mode){lockCover(mode==='unlock');lockMode=mode; entry=''; firstPin=''; $('lockTitle').textContent=mode==='set'?'اختر رمز من 4 أرقام':'أدخل الرمز'; $('lockNote').textContent=''; $('lockCancel').style.visibility=mode==='set'?'visible':'hidden'; dots(); $('lock').hidden=false}
   function dots(){Array.prototype.forEach.call($('pins').children,function(d,i){d.classList.toggle('on',i<entry.length)})}
   $('pad').addEventListener('click',function(ev){
     var b=ev.target.closest('button'); if(!b)return;
-    if(b.dataset.k==='cancel'){$('lock').hidden=true; return}
+    if(b.dataset.k==='cancel'){hideLock(); return}
     if(b.dataset.k==='back'){entry=entry.slice(0,-1); dots(); return}
     if(entry.length>=4)return;
     entry+=b.textContent.trim(); dots();
     if(entry.length<4)return;
     var p=entry;
     setTimeout(function(){
-      if(lockMode==='unlock'){hash(p).then(function(h){if(h===state.pin){$('lock').hidden=true}else{entry=''; dots(); $('pins').classList.remove('shake'); void $('pins').offsetWidth; $('pins').classList.add('shake'); $('lockNote').textContent='الرمز غير صحيح'}})}
+      if(lockMode==='unlock'){hash(p).then(function(h){if(h===state.pin){hideLock()}else{entry=''; dots(); $('pins').classList.remove('shake'); void $('pins').offsetWidth; $('pins').classList.add('shake'); $('lockNote').textContent='الرمز غير صحيح'}})}
       else if(!firstPin){firstPin=p; entry=''; dots(); $('lockTitle').textContent='أعد كتابة الرمز للتأكيد'}
-      else if(firstPin===p){hash(p).then(function(h){state.pin=h; save(); $('lock').hidden=true; render(); toast('تم تفعيل القفل')})}
+      else if(firstPin===p){hash(p).then(function(h){state.pin=h; save(); hideLock(); render(); toast('تم تفعيل القفل')})}
       else{firstPin=''; entry=''; dots(); $('lockTitle').textContent='الرمزين مختلفين، اختر رمز من جديد'}
     },120);
   });
@@ -1186,26 +1193,33 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function restore(){
     var d; try{d=JSON.parse($('bkText').value)}catch(e){$('bkErr').textContent='النص أو الملف غير صالح.'; return}
     var list=Array.isArray(d)?d:(d&&d.expenses); if(!Array.isArray(list)){$('bkErr').textContent='ما لقيت عمليات في هذه النسخة.'; return}
+    var bmap={};
+    function newId(id,pre){id=id==null?'':String(id); return acct()?scoped(id||uid()):(IDRE.test(id)?id:pre+uid())}
     if(!Array.isArray(d)&&Array.isArray(d.books)){
       d.books.forEach(function(nb){
-        if(!nb||!nb.id)return;
-        if(acct()){nb=Object.assign({},nb,{id:scoped(nb.id)})}
-        var b=book(nb.id); if(b&&ro(b.id))return;
-        if(!b){state.books.push({id:String(nb.id),name:String(nb.name||'قسم').slice(0,30),kind:nb.kind==='monthly'?'monthly':'project',color:+nb.color||8,budget:+nb.budget||0,contract:+nb.contract||0,contractCat:nb.contractCat?String(nb.contractCat):undefined,cats:(nb.cats||[]).filter(function(c){return c&&c.id}).map(function(c){return {id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:+c.c||8,fixed:!!c.fixed}})}); return}
-        (nb.cats||[]).forEach(function(c){if(c&&c.id&&!b.cats.some(function(x){return x.id===c.id}))b.cats.push({id:String(c.id),n:String(c.n||'فئة').slice(0,30),c:+c.c||8})});
-        if(!b.contract&&+nb.contract>0)b.contract=+nb.contract; if(!b.budget&&+nb.budget>0)b.budget=+nb.budget;
+        if(!nb||typeof nb!=='object'||nb.id==null)return;
+        var nid=newId(nb.id,'b'); bmap[String(nb.id)]=nid;
+        var c=cleanBook(nid,nb); if(!c)return;
+        var b=book(nid); if(b&&ro(b.id))return;
+        if(!b){state.books.push(c); return}
+        if(Array.isArray(nb.cats)&&nb.cats.length)c.cats.forEach(function(x){if(!b.cats.some(function(y){return y.id===x.id}))b.cats.push(x)});
+        if(!b.contract&&c.contract)b.contract=c.contract; if(!b.budget&&c.budget)b.budget=c.budget;
       });
-    }else if(!Array.isArray(d)&&+d.contract>0&&book('house')&&!book('house').contract){book('house').contract=+d.contract}
+    }else if(!Array.isArray(d)&&fin(d.contract)&&book('house')&&!book('house').contract){book('house').contract=fin(d.contract)}
+    var wb=writable(); if(!wb.length){$('bkErr').textContent='ما عندك قسم تقدر تضيف فيه.'; return}
     var have={}; state.expenses.forEach(function(e){have[e.id]=1});
     var added=0, jobs=[];
     list.forEach(function(e){
-      if(e&&acct())e=Object.assign({},e,{id:scoped(e.id),book:scoped(e.book)});
-      if(!e||have[e.id]||!(+e.amount>0)||!/^\d{4}-\d{2}-\d{2}$/.test(e.date||''))return;
-      var wb=writable(), bid=book(e.book)&&!ro(e.book)?e.book:wb[0].id, b=book(bid);
-      var cid=b.cats.some(function(c){return c.id===e.cat})?e.cat:moveTarget(b,'').id;
-      var ne={id:String(e.id||uid()),book:bid,cat:cid,amount:Math.round(+e.amount*100)/100,date:e.date,status:e.status==='due'?'due':'paid',method:String(e.method||'').slice(0,20),payee:String(e.payee||'').slice(0,60),ref:String(e.ref||'').slice(0,40),note:String(e.note||'').slice(0,140),created:+e.created||Date.now(),receipt:null};
-      if(e.receipt&&d.receipts&&typeof d.receipts[e.receipt]==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(d.receipts[e.receipt])){var rid=String(e.receipt); jobs.push(rput(rid,d.receipts[e.receipt]).then(function(){ne.receipt=rid},function(){}))}
-      state.expenses.push(ne); added++;
+      if(!e||typeof e!=='object')return;
+      var id=newId(e.id,'x'); if(have[id])return;
+      var ob=e.book==null?'':String(e.book), bid=bmap[ob]||(acct()?scoped(ob||'personal'):ob);
+      if(!book(bid)||ro(bid))bid=wb[0].id;
+      var ne=cleanExp(id,bid,Object.assign({},e,{receipt:null})); if(!ne)return;
+      var b=book(bid); if(!b.cats.some(function(c){return c.id===ne.cat}))ne.cat=moveTarget(b,'').id;
+      if(!ne.created)ne.created=Date.now();
+      var img=e.receipt!=null&&d.receipts&&d.receipts[String(e.receipt)];
+      if(typeof img==='string'&&/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(img)){var rid='r'+uid(); jobs.push(rput(rid,img).then(function(){ne.receipt=rid},function(){}))}
+      state.expenses.push(ne); have[id]=1; added++;
     });
     if(!Array.isArray(d)&&d.currency)state.currency=String(d.currency).slice(0,10);
     Promise.all(jobs).then(function(){save(); toast('تم استرجاع '+added+' عملية'); go('home')});
@@ -1296,7 +1310,10 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   cloudLoad(); load(); render();
   if(state.pin)showLock('unlock');
   cloudInit();
-  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')sync()});
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='hidden'){if(state.pin&&$('lock').hidden)showLock('unlock')}
+    else sync();
+  });
   window.addEventListener('online',function(){if(cloud.sb)sync(); else cloudInit()});
   setInterval(function(){if(document.visibilityState==='visible')sync()},45000);
 })();
