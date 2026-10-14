@@ -98,9 +98,17 @@ create policy books_update on public.books for update using (public.can_write(id
 drop policy if exists books_delete on public.books;
 create policy books_delete on public.books for delete using (owner = auth.uid());
 
+-- everyone in a section can see who else is in it
 drop policy if exists members_select on public.book_members;
 create policy members_select on public.book_members for select
-  using (user_id = auth.uid() or exists(select 1 from public.books where id = book_id and owner = auth.uid()));
+  using (user_id = auth.uid() or public.can_read(book_id));
+-- the owner can change a member's role (and only the role)
+drop policy if exists members_update on public.book_members;
+create policy members_update on public.book_members for update
+  using (exists(select 1 from public.books where id = book_id and owner = auth.uid()))
+  with check (exists(select 1 from public.books where id = book_id and owner = auth.uid()));
+revoke update on public.book_members from anon, authenticated;
+grant update (role) on public.book_members to authenticated;
 drop policy if exists members_delete on public.book_members;
 create policy members_delete on public.book_members for delete
   using (user_id = auth.uid() or exists(select 1 from public.books where id = book_id and owner = auth.uid()));
@@ -131,6 +139,79 @@ begin
 end $$;
 revoke all on function public.share_book(text,text,text) from public, anon;
 grant execute on function public.share_book(text,text,text) to authenticated;
+
+-- invite links: the owner makes a one-time link (7 days); whoever opens it signed in joins the section
+create table if not exists public.invites (
+  token text primary key default replace(gen_random_uuid()::text, '-', ''),
+  book_id text not null references public.books(id) on delete cascade,
+  role text not null default 'viewer' check (role in ('viewer','editor')),
+  created_by uuid not null default auth.uid(),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '7 days',
+  used_by uuid,
+  used_at timestamptz
+);
+create index if not exists invites_book_idx on public.invites(book_id);
+alter table public.invites enable row level security;
+revoke insert, update on public.invites from anon, authenticated;
+drop policy if exists invites_select on public.invites;
+create policy invites_select on public.invites for select
+  using (exists(select 1 from public.books where id = book_id and owner = auth.uid()));
+drop policy if exists invites_delete on public.invites;
+create policy invites_delete on public.invites for delete
+  using (exists(select 1 from public.books where id = book_id and owner = auth.uid()));
+
+create or replace function public.create_invite(b text, member_role text default 'viewer')
+returns text language plpgsql security definer set search_path = '' as $$
+declare t text;
+begin
+  if not exists(select 1 from public.books where id = b and owner = auth.uid()) then
+    raise exception 'not_owner';
+  end if;
+  if member_role not in ('viewer','editor') then raise exception 'bad_role'; end if;
+  if (select count(*) from public.invites where book_id = b and used_at is null and expires_at > now()) >= 20 then
+    raise exception 'too_many';
+  end if;
+  delete from public.invites where book_id = b and (used_at is not null or expires_at < now() - interval '30 days');
+  insert into public.invites(book_id, role, created_by) values (b, member_role, auth.uid()) returning token into t;
+  return t;
+end $$;
+
+-- what an invite is for, so the sign-in page can say who invited you (only whoever holds the link can ask)
+create or replace function public.invite_info(t text)
+returns json language sql security definer stable set search_path = '' as $$
+  select json_build_object('name', b.data ->> 'name', 'from', b.owner_email, 'role', i.role,
+    's', case when i.used_at is not null then 'used' when i.expires_at < now() then 'expired' else 'ok' end)
+  from public.invites i join public.books b on b.id = i.book_id
+  where i.token = t
+$$;
+
+create or replace function public.accept_invite(t text)
+returns json language plpgsql security definer set search_path = '' as $$
+declare i public.invites; bk public.books; em text := lower(coalesce(auth.jwt() ->> 'email', ''));
+begin
+  if auth.uid() is null then raise exception 'not_signed_in'; end if;
+  select * into i from public.invites where token = t for update;
+  if not found then return json_build_object('s','invalid'); end if;
+  select * into bk from public.books where id = i.book_id;
+  if bk.owner = auth.uid() then return json_build_object('s','self','b',bk.id,'n',bk.data ->> 'name'); end if;
+  if i.used_at is not null then
+    if i.used_by = auth.uid() then return json_build_object('s','ok','b',bk.id,'n',bk.data ->> 'name'); end if;
+    return json_build_object('s','used');
+  end if;
+  if i.expires_at < now() then return json_build_object('s','expired'); end if;
+  insert into public.book_members(book_id, user_id, email, role) values (i.book_id, auth.uid(), em, i.role)
+    on conflict (book_id, user_id) do update
+      set role = case when public.book_members.role = 'editor' then 'editor' else excluded.role end;
+  update public.invites set used_by = auth.uid(), used_at = now() where token = t;
+  return json_build_object('s','ok','b',bk.id,'n',bk.data ->> 'name');
+end $$;
+revoke all on function public.create_invite(text,text) from public, anon;
+revoke all on function public.accept_invite(text) from public, anon;
+revoke all on function public.invite_info(text) from public;
+grant execute on function public.create_invite(text,text) to authenticated;
+grant execute on function public.accept_invite(text) to authenticated;
+grant execute on function public.invite_info(text) to anon, authenticated;
 
 -- receipt photos: private bucket, path = <book_id>/<expense_id>.jpg
 insert into storage.buckets (id, name, public) values ('receipts','receipts', false)
