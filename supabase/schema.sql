@@ -287,6 +287,17 @@ begin
   delete from auth.users where id = uid;
   return 'ok';
 end $$;
+-- the admin lets a waiting account in without an invite link
+create or replace function public.admin_allow(uid uuid)
+returns text language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_admin() then raise exception 'not_admin'; end if;
+  if not exists(select 1 from auth.users where id = uid) then return 'missing'; end if;
+  insert into public.app_users(user_id, added_by) values (uid, auth.uid()) on conflict do nothing;
+  return 'ok';
+end $$;
+revoke all on function public.admin_allow(uuid) from public, anon;
+grant execute on function public.admin_allow(uuid) to authenticated;
 revoke all on function public.my_access() from public, anon;
 revoke all on function public.admin_users() from public, anon;
 revoke all on function public.admin_remove(uuid) from public, anon;

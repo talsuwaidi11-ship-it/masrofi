@@ -680,8 +680,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       if(cloud.sb)return;
       cloud.sb=window.supabase.createClient(CLOUD.url,CLOUD.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storageKey:'masrofi.auth'}});
       cloud.sb.auth.onAuthStateChange(function(ev,s){
-        var u=s&&s.user?{id:s.user.id,email:s.user.email||''}:null, was=cloud.user&&cloud.user.id;
-        cloud.user=u;
+        var md=s&&s.user&&s.user.user_metadata||{}, u=s&&s.user?{id:s.user.id,email:s.user.email||''}:null, was=cloud.user&&cloud.user.id;
+        cloud.user=u; cloud.metaInvite=/^[0-9a-f]{32}$/.test(md.invite||'')?md.invite:'';
         // a session that ended elsewhere (password change, sign-out on all devices) needs a fresh sign-in
         cloud.expired=!u&&!!cloud.linked&&(ev==='SIGNED_OUT'||(ev==='INITIAL_SESSION'&&navigator.onLine));
         if(ev==='PASSWORD_RECOVERY')setTimeout(newPassword,400);
@@ -713,7 +713,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       if(r.error)return !cloud.blocked; // an older server without this check, or a hiccup: keep what we knew
       var a=r.data||{}; cloud.admin=!!a.admin;
       if(a.allowed){cloud.blocked=false; return true}
-      var t=pendingInvite();
+      // the link's token is kept in this browser; an account made from an invite also carries it (other browser, home-screen app)
+      var t=pendingInvite()||cloud.metaInvite||'';
       if(!t)return false;
       return cloud.sb.rpc('accept_invite',{t:t}).then(function(r2){
         var d=(r2&&!r2.error&&r2.data)||{};
@@ -902,7 +903,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function signUp(){
     var f=authForm(); if(!f)return; if(!cloud.sb){$('auErr').textContent='ما في اتصال بالإنترنت.'; cloudInit(); return}
     authBusy(true);
-    cloud.sb.auth.signUp({email:f.email,password:f.password,options:{emailRedirectTo:location.origin+location.pathname}}).then(function(r){
+    var inv=pendingInvite(), opts={emailRedirectTo:location.origin+location.pathname}; if(inv)opts.data={invite:inv};
+    cloud.sb.auth.signUp({email:f.email,password:f.password,options:opts}).then(function(r){
       if(r.error)throw r.error;
       if(r.data&&r.data.session)toast('تم إنشاء الحساب');
       else if(r.data&&r.data.user&&r.data.user.identities&&!r.data.user.identities.length)$('auErr').textContent='هذا الإيميل مسجل من قبل. اضغط «دخول».';
@@ -1031,10 +1033,19 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     else h+='<p class="note">حذف الحساب يمسح أقسامه ومصاريفه من السيرفر، ويطلعه من الأقسام اللي شاركته فيها.</p>'+list.map(function(x){
       var tag=x.admin?'أنت · صاحب التطبيق':!x.allowed?'بدون دعوة · ما يقدر يحفظ شي':(x.books?x.books+' أقسام':'ما عنده أقسام');
       var seen=x.last_sign_in_at?' · آخر دخول '+dshort(String(x.last_sign_in_at).slice(0,10)):'';
-      return '<div class="member">'+av(x.email)+'<span class="who" dir="ltr">'+esc(x.email)+'<small dir="rtl">'+esc(tag+seen)+'</small></span><span></span>'+
+      return '<div class="member">'+av(x.email)+'<span class="who" dir="ltr">'+esc(x.email)+'<small dir="rtl">'+esc(tag+seen)+'</small></span>'+
+        (!x.allowed&&!x.admin?'<button type="button" class="mini soft" data-allow="'+esc(x.id)+'">اسمح</button>':'<span></span>')+
         (x.admin||(me&&x.id===me.id)?'<span></span>':'<button type="button" class="mini danger" data-rmuser="'+esc(x.id)+'" aria-label="حذف '+esc(x.email)+'">✕</button>')+'</div>'+
         '<div class="confirm" data-rmconfirm="'+esc(x.id)+'" hidden><span>تحذف حساب <bdi>'+esc(x.email)+'</bdi> وكل بياناته؟ ما تقدر ترجعها.</span><button type="button" class="mini danger" data-rmyes="'+esc(x.id)+'">احذف</button><button type="button" class="mini" data-cancel="1">تراجع</button></div>'}).join('');
     return h+'</section>';
+  }
+  function allowUser(uid,btn){
+    if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
+    btn.disabled=true;
+    cloud.sb.rpc('admin_allow',{uid:uid}).then(function(r){
+      if(r.error){btn.disabled=false; toast(/admin_allow|function/i.test(r.error.message||'')?'شغّل ملف قاعدة البيانات الجديد في Supabase أول':'ما قدرت أسمح له. جرب مرة ثانية.',null,null,5000); return}
+      toast('صار يقدر يستخدم التطبيق'); loadUsers();
+    },function(){btn.disabled=false; toast('ما في اتصال بالإنترنت')});
   }
   function cancelInvite(bid,t){
     if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
@@ -1087,7 +1098,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(cloud.blocked&&acct()&&!cloud.expired)return h+'<section class="card" id="acct"><h3>حسابك يحتاج دعوة<span class="tag plain">بانتظار دعوة</span></h3>'+
       '<p class="note">مسجل بـ <bdi>'+esc(acct().email)+'</bdi>. التطبيق خاص بالعايلة، وما يشتغل إلا بدعوة من صاحب التطبيق.</p>'+
       (cloud.why==='need_admin'?'<p class="err">الرابط اللي فتحته من شخص ما يقدر يدخل حسابات جديدة. اطلب الدعوة من صاحب التطبيق.</p>':cloud.why==='used'?'<p class="err">رابط الدعوة هذا مستخدم. اطلب رابط جديد.</p>':cloud.why==='expired'?'<p class="err">رابط الدعوة انتهى. اطلب رابط جديد.</p>':cloud.why==='invalid'?'<p class="err">رابط الدعوة غير صحيح.</p>':'')+
-      '<p class="note">إذا وصلك رابط دعوة، افتحه على هذا الجهاز وبتدخل على طول.</p>'+
+      '<div class="field"><label for="auInv">وصلك رابط دعوة؟ الصقه هني</label><input id="auInv" dir="ltr" autocomplete="off" autocapitalize="off" placeholder="https://masrofi.bythani.com/#invite=..."></div>'+
+      '<button class="btn" type="button" id="auInvGo">ادخل بالدعوة</button>'+
+      '<p class="note">أو اطلب من صاحب التطبيق يضغط «اسمح» جنب إيميلك في «إدارة الحسابات».</p>'+
       '<div class="row"><button class="btn soft" type="button" id="auCheck">تحقق مرة ثانية</button><button class="btn ghost" type="button" id="auOut">تسجيل خروج</button></div></section>';
     if(inv&&inv.s==='ok')h+='<div class="welcome"><b>عندك دعوة 🎉</b><span><bdi>'+esc(nameOf(inv.from))+'</bdi> '+(inv.name?'يدعوك لقسم «'+esc(inv.name)+'» '+(inv.role==='editor'?'تشوفه وتضيف فيه':'تشوفه')+'. سوّ حساب جديد أو سجّل دخول، وبتنضاف للقسم على طول.':'يدعوك لتطبيق مصروفي. سوّ حسابك الجديد.')+'</span></div>';
     else if(inv&&inv.s&&inv.s!=='loading')h+='<div class="welcome"><b>رابط الدعوة '+(inv.s==='used'?'مستخدم':inv.s==='expired'?'منتهي':'غير صحيح')+'</b><span>اطلب من صاحب القسم رابط جديد. تقدر تسوي حساب الحين وتقبل الدعوة بعدين.</span></div>';
@@ -2049,8 +2062,11 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(t.id==='auForgot'){forgot(); return}
     if(t.id==='auSync'){sync().then(function(r){if(r)toast('تمت المزامنة')}); return}
     if(t.id==='auOut'){signOut(t); return}
+    if(t.id==='auInvGo'){var m0=/([0-9a-f]{32})/i.exec(($('auInv')||{}).value||''); if(!m0){toast('الصق رابط الدعوة كامل'); return}
+      try{localStorage.setItem(IK,m0[1].toLowerCase())}catch(e){} cloud.why=''; t.disabled=true; enter().then(function(){if(cloud.blocked){t.disabled=false; if(!cloud.why)toast('ما قدرت أقبل الدعوة. تأكد من الاتصال')}}); return}
     if(t.id==='auCheck'){t.disabled=true; enter().then(function(){if(cloud.blocked){t.disabled=false; toast('للحين ما في دعوة لحسابك')}}); return}
     if(t.id==='appInvite'){appInvite(t); return}
+    if((x=t.closest('[data-allow]'))){allowUser(x.dataset.allow,x); return}
     if((x=t.closest('[data-rmuser]'))){var rc=V.querySelector('[data-rmconfirm="'+x.dataset.rmuser+'"]'); if(rc)rc.hidden=false; return}
     if((x=t.closest('[data-rmyes]'))){removeUser(x.dataset.rmyes,x); return}
     if(t.id==='rpPdf'){makePdf(t); return}
