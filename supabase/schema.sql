@@ -75,6 +75,47 @@ create or replace function public.id_free(b text) returns boolean
 language sql security definer stable set search_path = '' as $$
   select not exists(select 1 from public.deleted_books where id = b and owner <> auth.uid())
 $$;
+-- who may use the app: accounts are let in by an invite from the app owner (admin).
+-- Anyone can still create an account on the sign-in page, but it can't store anything until it is let in.
+create table if not exists public.app_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade
+);
+create table if not exists public.app_users (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  added_at timestamptz not null default now(),
+  added_by uuid
+);
+alter table public.app_admins enable row level security;
+alter table public.app_users enable row level security;
+revoke all on public.app_admins from anon, authenticated;
+revoke all on public.app_users from anon, authenticated;
+-- first run: the oldest account becomes the admin, and everyone who already has an account stays in
+insert into public.app_admins(user_id)
+  select id from auth.users where not exists(select 1 from public.app_admins) order by created_at limit 1;
+insert into public.app_users(user_id)
+  select id from auth.users where not exists(select 1 from public.app_users);
+insert into public.app_users(user_id) select user_id from public.app_admins on conflict do nothing;
+
+create or replace function public.is_admin() returns boolean
+language sql security definer stable set search_path = '' as $$
+  select exists(select 1 from public.app_admins where user_id = auth.uid())
+$$;
+create or replace function public.is_allowed() returns boolean
+language sql security definer stable set search_path = '' as $$
+  select exists(select 1 from public.app_users where user_id = auth.uid())
+      or exists(select 1 from public.app_admins where user_id = auth.uid())
+$$;
+-- what the signed-in account may do; on a brand-new install the first account to ask becomes the admin
+create or replace function public.my_access() returns json
+language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is null then raise exception 'not_signed_in'; end if;
+  if not exists(select 1 from public.app_admins) then
+    insert into public.app_admins(user_id) values (auth.uid());
+    insert into public.app_users(user_id) values (auth.uid()) on conflict do nothing;
+  end if;
+  return json_build_object('allowed', public.is_allowed(), 'admin', public.is_admin());
+end $$;
 create or replace function public.books_tombstone() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
@@ -92,7 +133,7 @@ alter table public.expenses enable row level security;
 drop policy if exists books_select on public.books;
 create policy books_select on public.books for select using (owner = auth.uid() or public.can_read(id));
 drop policy if exists books_insert on public.books;
-create policy books_insert on public.books for insert with check (owner = auth.uid() and public.id_free(id));
+create policy books_insert on public.books for insert with check (owner = auth.uid() and public.id_free(id) and public.is_allowed());
 drop policy if exists books_update on public.books;
 create policy books_update on public.books for update using (public.can_write(id)) with check (public.can_write(id));
 drop policy if exists books_delete on public.books;
@@ -131,7 +172,8 @@ begin
   end if;
   if member_role not in ('viewer','editor') then raise exception 'bad_role'; end if;
   select id into uid from auth.users where lower(email) = lower(trim(member_email));
-  if uid is null then return 'no_account'; end if;
+  if uid is null or not exists(select 1 from public.app_users where user_id = uid)
+     and not exists(select 1 from public.app_admins where user_id = uid) then return 'no_account'; end if;
   if uid = auth.uid() then return 'self'; end if;
   insert into public.book_members(book_id, user_id, email, role) values (b, uid, lower(trim(member_email)), member_role)
     on conflict (book_id, user_id) do update set role = excluded.role;
@@ -152,27 +194,35 @@ create table if not exists public.invites (
   used_at timestamptz
 );
 create index if not exists invites_book_idx on public.invites(book_id);
+-- an invite with no section only lets a new account into the app (admin only)
+alter table public.invites alter column book_id drop not null;
 alter table public.invites enable row level security;
 revoke insert, update on public.invites from anon, authenticated;
 drop policy if exists invites_select on public.invites;
 create policy invites_select on public.invites for select
-  using (exists(select 1 from public.books where id = book_id and owner = auth.uid()));
+  using (exists(select 1 from public.books where id = book_id and owner = auth.uid())
+      or (book_id is null and created_by = auth.uid() and public.is_admin()));
 drop policy if exists invites_delete on public.invites;
 create policy invites_delete on public.invites for delete
-  using (exists(select 1 from public.books where id = book_id and owner = auth.uid()));
+  using (exists(select 1 from public.books where id = book_id and owner = auth.uid())
+      or (book_id is null and created_by = auth.uid() and public.is_admin()));
 
 create or replace function public.create_invite(b text, member_role text default 'viewer')
 returns text language plpgsql security definer set search_path = '' as $$
 declare t text;
 begin
-  if not exists(select 1 from public.books where id = b and owner = auth.uid()) then
+  if b is null then
+    if not public.is_admin() then raise exception 'not_admin'; end if;
+  elsif not exists(select 1 from public.books where id = b and owner = auth.uid()) then
     raise exception 'not_owner';
   end if;
   if member_role not in ('viewer','editor') then raise exception 'bad_role'; end if;
-  if (select count(*) from public.invites where book_id = b and used_at is null and expires_at > now()) >= 20 then
+  if (select count(*) from public.invites where book_id is not distinct from b and created_by = auth.uid()
+      and used_at is null and expires_at > now()) >= 20 then
     raise exception 'too_many';
   end if;
-  delete from public.invites where book_id = b and (used_at is not null or expires_at < now() - interval '30 days');
+  delete from public.invites where book_id is not distinct from b and created_by = auth.uid()
+    and (used_at is not null or expires_at < now() - interval '30 days');
   insert into public.invites(book_id, role, created_by) values (b, member_role, auth.uid()) returning token into t;
   return t;
 end $$;
@@ -180,9 +230,9 @@ end $$;
 -- what an invite is for, so the sign-in page can say who invited you (only whoever holds the link can ask)
 create or replace function public.invite_info(t text)
 returns json language sql security definer stable set search_path = '' as $$
-  select json_build_object('name', b.data ->> 'name', 'from', b.owner_email, 'role', i.role,
+  select json_build_object('name', b.data ->> 'name', 'from', coalesce(b.owner_email, u.email::text), 'role', i.role,
     's', case when i.used_at is not null then 'used' when i.expires_at < now() then 'expired' else 'ok' end)
-  from public.invites i join public.books b on b.id = i.book_id
+  from public.invites i left join public.books b on b.id = i.book_id left join auth.users u on u.id = i.created_by
   where i.token = t
 $$;
 
@@ -193,19 +243,60 @@ begin
   if auth.uid() is null then raise exception 'not_signed_in'; end if;
   select * into i from public.invites where token = t for update;
   if not found then return json_build_object('s','invalid'); end if;
-  select * into bk from public.books where id = i.book_id;
+  if i.book_id is not null then select * into bk from public.books where id = i.book_id; end if;
   if bk.owner = auth.uid() then return json_build_object('s','self','b',bk.id,'n',bk.data ->> 'name'); end if;
   if i.used_at is not null then
     if i.used_by = auth.uid() then return json_build_object('s','ok','b',bk.id,'n',bk.data ->> 'name'); end if;
     return json_build_object('s','used');
   end if;
   if i.expires_at < now() then return json_build_object('s','expired'); end if;
-  insert into public.book_members(book_id, user_id, email, role) values (i.book_id, auth.uid(), em, i.role)
-    on conflict (book_id, user_id) do update
-      set role = case when public.book_members.role = 'editor' then 'editor' else excluded.role end;
+  -- only an invite from the admin can let a new account into the app
+  if not public.is_allowed() then
+    if not exists(select 1 from public.app_admins where user_id = i.created_by) then
+      return json_build_object('s','need_admin');
+    end if;
+    insert into public.app_users(user_id, added_by) values (auth.uid(), i.created_by) on conflict do nothing;
+  end if;
+  if i.book_id is not null then
+    insert into public.book_members(book_id, user_id, email, role) values (i.book_id, auth.uid(), em, i.role)
+      on conflict (book_id, user_id) do update
+        set role = case when public.book_members.role = 'editor' then 'editor' else excluded.role end;
+  end if;
   update public.invites set used_by = auth.uid(), used_at = now() where token = t;
   return json_build_object('s','ok','b',bk.id,'n',bk.data ->> 'name');
 end $$;
+
+-- the admin's list of accounts, and removing one (removes their sections, entries and memberships too)
+create or replace function public.admin_users()
+returns table(id uuid, email text, created_at timestamptz, last_sign_in_at timestamptz, allowed boolean, admin boolean, books bigint)
+language plpgsql security definer stable set search_path = '' as $$
+begin
+  if not public.is_admin() then raise exception 'not_admin'; end if;
+  return query
+    select u.id, u.email::text, u.created_at, u.last_sign_in_at,
+      exists(select 1 from public.app_users a where a.user_id = u.id) or exists(select 1 from public.app_admins d where d.user_id = u.id),
+      exists(select 1 from public.app_admins d where d.user_id = u.id),
+      (select count(*) from public.books b where b.owner = u.id)
+    from auth.users u order by u.created_at;
+end $$;
+create or replace function public.admin_remove(uid uuid)
+returns text language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_admin() then raise exception 'not_admin'; end if;
+  if uid = auth.uid() or exists(select 1 from public.app_admins where user_id = uid) then return 'admin'; end if;
+  delete from auth.users where id = uid;
+  return 'ok';
+end $$;
+revoke all on function public.my_access() from public, anon;
+revoke all on function public.admin_users() from public, anon;
+revoke all on function public.admin_remove(uuid) from public, anon;
+revoke all on function public.is_admin() from public, anon;
+revoke all on function public.is_allowed() from public, anon;
+grant execute on function public.my_access() to authenticated;
+grant execute on function public.admin_users() to authenticated;
+grant execute on function public.admin_remove(uuid) to authenticated;
+grant execute on function public.is_admin() to authenticated;
+grant execute on function public.is_allowed() to authenticated;
 revoke all on function public.create_invite(text,text) from public, anon;
 revoke all on function public.accept_invite(text) from public, anon;
 revoke all on function public.invite_info(text) from public;

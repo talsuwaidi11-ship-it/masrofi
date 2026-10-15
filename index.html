@@ -563,9 +563,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   var IDRE=/^[A-Za-z0-9_-]{1,64}$/, DRE=/^\d{4}-\d{2}-\d{2}$/;
   function okId(id){id=String(id); return IDRE.test(id)&&!(id in Object.prototype)}
   var EK=['cat','amount','date','status','method','payee','ref','note','receipt','created','dueDate','rec','by'];
-  var cloud={sb:null,user:null,linked:null,expired:false,busy:false,again:false,timer:null,last:0,err:'',first:false,replace:false,snap:{b:{},e:{}},meta:{},members:{},up:{},cursor:null,invites:{},inviteInfo:null};
-  function cloudLoad(){try{var c=JSON.parse(localStorage.getItem(CK)||'null'); if(c){cloud.linked=c.linked||null; cloud.snap=c.snap||{b:{},e:{}}; cloud.meta=c.meta||{}; cloud.members=c.members||{}; cloud.up=c.up||{}; cloud.cursor=c.cursor||null; cloud.first=!!c.first; cloud.replace=!!c.replace}}catch(e){}}
-  function cloudSave(){try{localStorage.setItem(CK,JSON.stringify({linked:cloud.linked,snap:cloud.snap,meta:cloud.meta,members:cloud.members,up:cloud.up,cursor:cloud.cursor,first:cloud.first,replace:cloud.replace}))}catch(e){if(!cloudSave.warned){cloudSave.warned=1; toast('مساحة التخزين في الجهاز ممتلئة. المزامنة ممكن تتأخر.')}}}
+  var cloud={sb:null,user:null,linked:null,expired:false,busy:false,again:false,timer:null,last:0,err:'',first:false,replace:false,snap:{b:{},e:{}},meta:{},members:{},up:{},cursor:null,invites:{},inviteInfo:null,blocked:false,why:'',admin:false,users:null};
+  function cloudLoad(){try{var c=JSON.parse(localStorage.getItem(CK)||'null'); if(c){cloud.linked=c.linked||null; cloud.snap=c.snap||{b:{},e:{}}; cloud.meta=c.meta||{}; cloud.members=c.members||{}; cloud.up=c.up||{}; cloud.cursor=c.cursor||null; cloud.first=!!c.first; cloud.replace=!!c.replace; cloud.blocked=!!c.blocked; cloud.admin=!!c.admin}}catch(e){}}
+  function cloudSave(){try{localStorage.setItem(CK,JSON.stringify({linked:cloud.linked,snap:cloud.snap,meta:cloud.meta,members:cloud.members,up:cloud.up,cursor:cloud.cursor,first:cloud.first,replace:cloud.replace,blocked:cloud.blocked,admin:cloud.admin}))}catch(e){if(!cloudSave.warned){cloudSave.warned=1; toast('مساحة التخزين في الجهاز ممتلئة. المزامنة ممكن تتأخر.')}}}
   function acct(){return cloud.user||cloud.linked}
   // things changed here that the server doesn't have yet
   function dirtyCount(){
@@ -650,19 +650,42 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
   function linkAccount(){
     var u=cloud.user; if(!u)return;
-    if(cloud.linked&&cloud.linked.id===u.id){sync().then(acceptInvite); return}
+    if(cloud.linked&&cloud.linked.id===u.id){enter(); return}
     if(cloud.linked){ // a different account was on this device: start clean
       if(dirtyCount()&&!window.confirm('في تغييرات من حساب '+cloud.linked.email+' ما انرفعت للسحابة، وبتنمسح من هذا الجهاز لو دخلت بحساب ثاني. تكمل؟')){cloud.sb.auth.signOut({scope:'local'}); return}
       wipeLocal(); state.books=[]; state.expenses=[]; cloud.replace=true;
     }else{
       cloud.linked=u; remapLocal(); cloud.replace=!state.expenses.length;
     }
-    cloud.expired=false; cloud.linked=u; cloud.snap={b:{},e:{}}; cloud.meta={}; cloud.members={}; cloud.up={}; cloud.cursor=null; cloud.first=true;
-    saveLocal(); cloudSave(); render(); sync().then(acceptInvite);
+    cloud.expired=false; cloud.linked=u; cloud.snap={b:{},e:{}}; cloud.meta={}; cloud.members={}; cloud.up={}; cloud.cursor=null; cloud.first=true; cloud.blocked=false; cloud.admin=false;
+    saveLocal(); cloudSave(); render(); enter();
+  }
+  // new accounts only get in with an invite from the app owner; the server enforces it, this just explains it
+  function enter(){return access().then(function(ok){if(ok)return sync().then(acceptInvite)})}
+  function access(){
+    if(!cloud.sb||!cloud.user)return Promise.resolve(false);
+    var was=cloud.blocked;
+    return cloud.sb.rpc('my_access').then(function(r){
+      if(r.error)return !cloud.blocked; // an older server without this check, or a hiccup: keep what we knew
+      var a=r.data||{}; cloud.admin=!!a.admin;
+      if(a.allowed){cloud.blocked=false; return true}
+      var t=pendingInvite();
+      if(!t)return false;
+      return cloud.sb.rpc('accept_invite',{t:t}).then(function(r2){
+        var d=(r2&&!r2.error&&r2.data)||{};
+        if(d.s==='ok'){cloud.blocked=false; return true}
+        if(r2&&!r2.error){try{localStorage.removeItem(IK)}catch(e){} cloud.inviteInfo=null; cloud.why=d.s||''}
+        return false;
+      });
+    }).then(function(ok){
+      if(!ok)cloud.blocked=true;
+      cloudSave(); if(was!==cloud.blocked||!ok)render();
+      return ok;
+    },function(){return !cloud.blocked});
   }
   function cloudKick(){if(!acct())return; clearTimeout(cloud.timer); cloud.timer=setTimeout(sync,1200)}
   function sync(){
-    if(!cloud.sb||!cloud.user)return Promise.resolve(false);
+    if(!cloud.sb||!cloud.user||cloud.blocked)return Promise.resolve(false);
     if(cloud.busy){cloud.again=true; return cloud.busy}
     clearTimeout(cloud.timer); cloud.err=''; syncUI();
     var perr=null, keep=function(e){perr=perr||e};
@@ -737,7 +760,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var sb=cloud.sb, me=cloud.user.id, snap=cloud.snap, changed=false;
     return Promise.all([sb.from('books').select('id,owner,owner_email,data'),sb.from('book_members').select('book_id,user_id,email,role')]).then(function(r){
       var rows=ok(r[0])||[], mem=ok(r[1])||[];
-      if(cloud.replace&&rows.length&&!state.expenses.length){state.books=[]; state.expenses=[]; changed=true}
+      // a new device takes the account's own sections from the server; someone only invited into others' sections keeps their starter ones
+      if(cloud.replace&&rows.some(function(x){return x.owner===me})&&!state.expenses.length){state.books=[]; state.expenses=[]; changed=true}
       cloud.replace=false;
       var role={}, members={}, seen={}, fresh=[];
       mem.forEach(function(m){if(m.user_id===me)role[m.book_id]=m.role==='editor'?'editor':'viewer'; else (members[m.book_id]=members[m.book_id]||[]).push({user_id:m.user_id,email:String(m.email||''),role:m.role==='editor'?'editor':'viewer'})});
@@ -904,12 +928,12 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function loadInvites(){
     if(!cloud.sb||!cloud.user)return;
     cloud.sb.from('invites').select('token,book_id,role,expires_at').is('used_at',null).gt('expires_at',new Date().toISOString()).then(function(r){
-      if(r.error)return; var o={}; (r.data||[]).forEach(function(i){(o[i.book_id]=o[i.book_id]||[]).push(i)});
-      cloud.invites=o; if(ui.view==='settings'&&ui.set==='books')softRender();
+      if(r.error)return; var o={}; (r.data||[]).forEach(function(i){var k=i.book_id||'_app'; (o[k]=o[k]||[]).push(i)});
+      cloud.invites=o; if(ui.view==='settings'&&(ui.set==='books'||ui.set==='users'))softRender();
     });
   }
   function sendInvite(t,bname,role){
-    var url=inviteUrl(t), text='أدعوك تشوف قسم «'+bname+'» في مصروفي'+(role==='editor'?' وتضيف فيه':'')+'. افتح الرابط وسوّ حساب أو سجّل دخول:';
+    var url=inviteUrl(t), text=bname?'أدعوك تشوف قسم «'+bname+'» في مصروفي'+(role==='editor'?' وتضيف فيه':'')+'. افتح الرابط وسوّ حساب أو سجّل دخول:':'أدعوك لتطبيق مصروفي تسجل فيه مصاريفك. افتح الرابط وسوّ حسابك:';
     var copy=function(){try{navigator.clipboard.writeText(url).then(function(){toast('تم نسخ رابط الدعوة')},function(){window.prompt('انسخ رابط الدعوة',url)})}catch(e){window.prompt('انسخ رابط الدعوة',url)}};
     if(navigator.share)navigator.share({title:'دعوة مصروفي',text:text,url:url}).catch(function(e){if(!e||e.name!=='AbortError')copy()});
     else copy();
@@ -926,6 +950,47 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       cloud.invites[bid]=(cloud.invites[bid]||[]).concat([{token:t,book_id:bid,role:role,expires_at:new Date(Date.now()+7*864e5).toISOString()}]);
       render(); sendInvite(t,b?b.name:'',role);
     }).catch(function(){toast('ما قدرت أسوي رابط الدعوة. تأكد من الاتصال وجرب مرة ثانية.')}).then(function(){btn.disabled=false});
+  }
+  // the app owner's page: who has an account, invite someone new, remove an account
+  function appInvite(btn){
+    if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
+    btn.disabled=true;
+    cloud.sb.rpc('create_invite',{b:null,member_role:'viewer'}).then(function(r){
+      var t=ok(r); if(!/^[0-9a-f]{32}$/.test(String(t)))throw new Error('token');
+      cloud.invites._app=(cloud.invites._app||[]).concat([{token:t,book_id:null,role:'viewer',expires_at:new Date(Date.now()+7*864e5).toISOString()}]);
+      render(); sendInvite(t,'','viewer');
+    }).catch(function(){toast('ما قدرت أسوي رابط الدعوة. تأكد من الاتصال وجرب مرة ثانية.')}).then(function(){btn.disabled=false});
+  }
+  function loadUsers(){
+    if(!cloud.sb||!cloud.user)return;
+    cloud.sb.rpc('admin_users').then(function(r){cloud.users=r.error?{err:1}:(r.data||[]); if(ui.view==='settings'&&ui.set==='users')softRender()});
+  }
+  function removeUser(uidv,btn){
+    if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
+    btn.disabled=true;
+    cloud.sb.rpc('admin_remove',{uid:uidv}).then(function(r){
+      var res=ok(r); if(res!=='ok')throw new Error(res);
+      cloud.users=(cloud.users||[]).filter(function(x){return x.id!==uidv});
+      Object.keys(cloud.members).forEach(function(b){cloud.members[b]=cloud.members[b].filter(function(m){return m.user_id!==uidv})}); cloudSave();
+      toast('تم حذف الحساب وبياناته'); render(); sync();
+    }).catch(function(){btn.disabled=false; toast('ما قدرت أحذف الحساب. تأكد من الاتصال وجرب مرة ثانية.')});
+  }
+  function usersCard(){
+    var list=cloud.users, invs=cloud.invites._app||[], me=acct();
+    var h='<section class="card"><h3>دعوة شخص جديد</h3><p class="note">ما أحد يقدر يستخدم التطبيق إلا بدعوة منك. الرابط لشخص واحد ويشتغل 7 أيام. ودعوة أي قسم منك تدخل صاحبها التطبيق بعد.</p>'+
+      invs.map(function(i){return '<div class="member"><span class="av" style="background:var(--faint)">✉︎</span><span class="who">دعوة ما انقبلت بعد<small>تنتهي '+dshort(i.expires_at.slice(0,10))+'</small></span>'+
+        '<button type="button" class="mini soft" data-resend="'+esc(i.token)+'" data-bid="" data-role="viewer">إرسال</button><button type="button" class="mini danger" data-uninvite="'+esc(i.token)+'" data-bid="_app" aria-label="إلغاء الدعوة">✕</button></div>'}).join('')+
+      '<button class="btn" type="button" id="appInvite">إرسال رابط دعوة للتطبيق</button></section>';
+    h+='<section class="card"><h3>الحسابات</h3>';
+    if(!list)h+='<p class="note">جاري التحميل…</p>';
+    else if(list.err)h+='<p class="err">ما قدرت أجيب الحسابات. تأكد من الاتصال، أو شغّل ملف قاعدة البيانات الجديد في Supabase.</p>';
+    else h+='<p class="note">حذف الحساب يمسح أقسامه ومصاريفه من السيرفر، ويطلعه من الأقسام اللي شاركته فيها.</p>'+list.map(function(x){
+      var tag=x.admin?'أنت · صاحب التطبيق':!x.allowed?'بدون دعوة · ما يقدر يحفظ شي':(x.books?x.books+' أقسام':'ما عنده أقسام');
+      var seen=x.last_sign_in_at?' · آخر دخول '+dshort(String(x.last_sign_in_at).slice(0,10)):'';
+      return '<div class="member">'+av(x.email)+'<span class="who" dir="ltr">'+esc(x.email)+'<small dir="rtl">'+esc(tag+seen)+'</small></span><span></span>'+
+        (x.admin||(me&&x.id===me.id)?'<span></span>':'<button type="button" class="mini danger" data-rmuser="'+esc(x.id)+'" aria-label="حذف '+esc(x.email)+'">✕</button>')+'</div>'+
+        '<div class="confirm" data-rmconfirm="'+esc(x.id)+'" hidden><span>تحذف حساب <bdi>'+esc(x.email)+'</bdi> وكل بياناته؟ ما تقدر ترجعها.</span><button type="button" class="mini danger" data-rmyes="'+esc(x.id)+'">احذف</button><button type="button" class="mini" data-cancel="1">تراجع</button></div>'}).join('');
+    return h+'</section>';
   }
   function cancelInvite(bid,t){
     if(!cloud.sb||!cloud.user){toast('ما في اتصال بالإنترنت'); return}
@@ -946,8 +1011,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     cloud.sb.rpc('accept_invite',{t:t}).then(function(r){
       if(r.error)throw r.error;
       var d=r.data||{}; try{localStorage.removeItem(IK)}catch(e){} cloud.inviteInfo=null;
+      if(d.s==='ok'&&!d.b){toast('أهلاً فيك! حسابك صار جاهز'); return}
       if(d.s==='ok')return sync().then(function(){var b=book(d.b); toast('تمت إضافتك لقسم «'+(b?b.name:d.n||'')+'»'); if(b){ui.book=b.id; ui.btab='over'; go('book')}});
-      toast(d.s==='self'?'هذا القسم لك أصلاً':d.s==='used'?'رابط الدعوة هذا استخدمه شخص ثاني. اطلب رابط جديد.':d.s==='expired'?'رابط الدعوة انتهى. اطلب رابط جديد.':'رابط الدعوة غير صحيح.',null,null,5000);
+      toast(d.s==='self'?'هذا القسم لك أصلاً':d.s==='used'?'رابط الدعوة هذا استخدمه شخص ثاني. اطلب رابط جديد.':d.s==='expired'?'رابط الدعوة انتهى. اطلب رابط جديد.':d.s==='need_admin'?'هذا الرابط يحتاج حساب موجود في التطبيق.':'رابط الدعوة غير صحيح.',null,null,5000);
     }).catch(function(e){if(errKind(e)!=='net'){try{localStorage.removeItem(IK)}catch(x){}} toast('ما قدرت أقبل الدعوة. جرب افتح الرابط مرة ثانية.')}).then(function(){acceptInvite.busy=false});
   }
   function accountCard(){
@@ -959,6 +1025,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       '<div class="field"><label for="auEmail">الإيميل</label><input id="auEmail" type="email" autocomplete="email" inputmode="email" dir="ltr" maxlength="120" value="'+(cloud.expired?esc(cloud.linked.email):'')+'"></div>'+
       '<div class="field"><label for="auPass">كلمة السر</label><input id="auPass" type="password" autocomplete="current-password" dir="ltr" placeholder="8 أحرف أو أكثر" maxlength="72"></div><div class="err" id="auErr"></div>'+
       '<div class="row"><button class="btn" type="button" id="auIn">دخول</button><button class="btn soft" type="button" id="auUp">حساب جديد</button></div>'+
+      (pendingInvite()?'':'<p class="note">الحساب الجديد يشتغل بدعوة من صاحب التطبيق.</p>')+
       '<button class="btn ghost" type="button" id="auForgot">نسيت كلمة السر</button><p class="note" id="syncSt"></p></section>';
     return '<section class="card" id="acct"><h3>الحساب والمزامنة<span class="tag ok">مسجل</span></h3>'+
       '<p class="note">مسجل بـ <bdi>'+esc(u.email)+'</bdi>. بياناتك محفوظة في حسابك على السحابة، وما يشوفها إلا أنت واللي تشاركهم.</p><p class="note" id="syncSt"></p>'+
@@ -973,7 +1040,12 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
   function gateView(){
     var inv=pendingInvite()&&cloud.inviteInfo, h='<header class="top"><div><h1>مصروفي</h1><p>مصاريفك ومشاريعك في مكان واحد</p></div></header>';
-    if(inv&&inv.s==='ok')h+='<div class="welcome"><b>عندك دعوة 🎉</b><span><bdi>'+esc(nameOf(inv.from))+'</bdi> يدعوك لقسم «'+esc(inv.name)+'» '+(inv.role==='editor'?'تشوفه وتضيف فيه':'تشوفه')+'. سوّ حساب جديد أو سجّل دخول، وبتنضاف للقسم على طول.</span></div>';
+    if(cloud.blocked&&acct()&&!cloud.expired)return h+'<section class="card" id="acct"><h3>حسابك يحتاج دعوة<span class="tag plain">بانتظار دعوة</span></h3>'+
+      '<p class="note">مسجل بـ <bdi>'+esc(acct().email)+'</bdi>. التطبيق خاص بالعايلة، وما يشتغل إلا بدعوة من صاحب التطبيق.</p>'+
+      (cloud.why==='need_admin'?'<p class="err">الرابط اللي فتحته من شخص ما يقدر يدخل حسابات جديدة. اطلب الدعوة من صاحب التطبيق.</p>':cloud.why==='used'?'<p class="err">رابط الدعوة هذا مستخدم. اطلب رابط جديد.</p>':cloud.why==='expired'?'<p class="err">رابط الدعوة انتهى. اطلب رابط جديد.</p>':cloud.why==='invalid'?'<p class="err">رابط الدعوة غير صحيح.</p>':'')+
+      '<p class="note">إذا وصلك رابط دعوة، افتحه على هذا الجهاز وبتدخل على طول.</p>'+
+      '<div class="row"><button class="btn soft" type="button" id="auCheck">تحقق مرة ثانية</button><button class="btn ghost" type="button" id="auOut">تسجيل خروج</button></div></section>';
+    if(inv&&inv.s==='ok')h+='<div class="welcome"><b>عندك دعوة 🎉</b><span><bdi>'+esc(nameOf(inv.from))+'</bdi> '+(inv.name?'يدعوك لقسم «'+esc(inv.name)+'» '+(inv.role==='editor'?'تشوفه وتضيف فيه':'تشوفه')+'. سوّ حساب جديد أو سجّل دخول، وبتنضاف للقسم على طول.':'يدعوك لتطبيق مصروفي. سوّ حسابك الجديد.')+'</span></div>';
     else if(inv&&inv.s&&inv.s!=='loading')h+='<div class="welcome"><b>رابط الدعوة '+(inv.s==='used'?'مستخدم':inv.s==='expired'?'منتهي':'غير صحيح')+'</b><span>اطلب من صاحب القسم رابط جديد. تقدر تسوي حساب الحين وتقبل الدعوة بعدين.</span></div>';
     return h+accountCard()+'<p class="note" style="text-align:center">بياناتك محمية: ما يشوفها إلا صاحب الحساب واللي يشاركهم.</p>';
   }
@@ -990,7 +1062,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       '<button type="button" class="mini danger" data-unshare="'+b.id+'" data-uid="'+esc(x.user_id)+'" aria-label="إزالة '+esc(x.email)+'">✕</button></div>'}).join('');
     h+=invs.map(function(i){return '<div class="member"><span class="av" style="background:var(--faint)">✉︎</span><span class="who">دعوة ما انقبلت بعد<small>'+roleTxt(i.role)+' · تنتهي '+dshort(i.expires_at.slice(0,10))+'</small></span>'+
       '<button type="button" class="mini soft" data-resend="'+esc(i.token)+'" data-bid="'+b.id+'" data-role="'+esc(i.role)+'">إرسال</button><button type="button" class="mini danger" data-uninvite="'+esc(i.token)+'" data-bid="'+b.id+'" aria-label="إلغاء الدعوة">✕</button></div>'}).join('');
-    h+='<div class="invite"><p><b>ادعُ شخص برابط</b>: ترسله على الواتساب، ولما يفتحه ويسوي حساب ينضاف للقسم. الرابط لشخص واحد ويشتغل 7 أيام.</p>'+
+    h+='<div class="invite"><p><b>ادعُ شخص برابط</b>: ترسله على الواتساب، ولما يفتحه ويسوي حساب ينضاف للقسم. الرابط لشخص واحد ويشتغل 7 أيام.'+(cloud.admin?'':' (الشخص لازم يكون عنده حساب في التطبيق. الحساب الجديد يحتاج دعوة من صاحب التطبيق.)')+'</p>'+
       '<div class="addrow"><select data-invrole="'+b.id+'" aria-label="الصلاحية"><option value="viewer">يشوف بس</option><option value="editor">يضيف ويعدل</option></select><button type="button" class="btn" style="flex:1;min-height:42px;padding:9px" data-invite="'+b.id+'">إرسال رابط دعوة</button></div></div>';
     h+='<details class="plain"><summary>أو أضف شخص عنده حساب بإيميله</summary><div class="addrow"><input data-shemail="'+b.id+'" type="email" inputmode="email" dir="ltr" placeholder="إيميل الشخص" aria-label="إيميل الشخص" maxlength="120"><select data-shrole="'+b.id+'" aria-label="الصلاحية"><option value="viewer">يشوف بس</option><option value="editor">يضيف ويعدل</option></select><button type="button" class="mini" data-share="'+b.id+'">إضافة</button></div></details>';
     return h+'</div>';
@@ -1146,7 +1218,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
 
   // ---------- views ----------
   function render(){
-    var gate=!!CLOUD.url&&(!acct()||cloud.expired); document.querySelector('.nav').hidden=gate;
+    var gate=!!CLOUD.url&&(!acct()||cloud.expired||cloud.blocked); document.querySelector('.nav').hidden=gate;
     var cur=ui.view==='book'?'home':ui.view;
     Array.prototype.forEach.call(document.querySelectorAll('.nav [data-go]'),function(b){if(b.dataset.go===cur)b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current')});
     if(gate){$('view').innerHTML=gateView(); inviteInfo(); syncUI(); return}
@@ -1418,6 +1490,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var u=acct(), nrec=0; state.books.forEach(function(b){nrec+=(b.rec||[]).length});
     var rows=[
       CLOUD.url?['acct','👤','الحساب والمزامنة',u?u.email:'غير مسجل']:null,
+      CLOUD.url&&cloud.admin?['users','🛡️','إدارة الحسابات','من يقدر يستخدم التطبيق · دعوة وحذف']:null,
       ['books','👨‍👩‍👧','الأقسام والمشاركة',state.books.length+' أقسام · ادعُ العايلة برابط'],
       ['cats','🏷️','الفئات والميزانيات','الأيقونات والأسماء وميزانية كل فئة'],
       ['rec','🔁','المصاريف الثابتة',nrec?nrec+' مصروف ثابت كل شهر':'الإيجار والفواتير والأقساط'],
@@ -1426,7 +1499,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       ['backup','💾','النسخة الاحتياطية','حفظ واسترجاع ملف']
     ].filter(Boolean);
     var h='<header class="top"><div><h1>الإعدادات</h1></div></header><div class="list">'+rows.map(function(r){return '<button type="button" data-set="'+r[0]+'"><span class="li">'+r[1]+'</span><span style="min-width:0">'+r[2]+'<small>'+esc(r[3])+'</small></span><span class="chev">‹</span></button>'}).join('')+'</div>';
-    h+='<div class="list"><button type="button" data-act="shareapp"><span class="li">📤</span><span style="min-width:0">شارك التطبيق مع العايلة<small dir="ltr" style="text-align:right">'+esc(appUrl())+'</small></span><span class="chev">‹</span></button>'+
+    h+='<div class="list">'+(!CLOUD.url||!acct()||cloud.admin?'<button type="button" data-act="shareapp"><span class="li">📤</span><span style="min-width:0">'+(cloud.admin?'ادعُ شخص جديد للتطبيق<small>رابط دعوة لشخص واحد':'شارك التطبيق مع العايلة<small dir="ltr" style="text-align:right">'+esc(appUrl()))+'</small></span><span class="chev">‹</span></button>':'')+
       (isIOS()&&!standalone()?'<button type="button" data-act="a2hs"><span class="li">📲</span><span>ثبّت التطبيق على الشاشة<small>زر المشاركة ثم «إضافة إلى الشاشة الرئيسية»</small></span><span class="chev">‹</span></button>':'')+'</div>';
     return h;
   }
@@ -1434,6 +1507,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   function settingsSub(){
     var s=ui.set;
     if(s==='acct')return subHead('الحساب والمزامنة')+accountCard();
+    if(s==='users'&&cloud.admin)return subHead('إدارة الحسابات','أنت صاحب التطبيق: تتحكم من يدخل')+usersCard();
     if(s==='books')return subHead('الأقسام والمشاركة','كل قسم له ميزانيته، وتقدر تشاركه مع العايلة')+'<section class="card"><div class="set">'+state.books.map(secBox).join('')+'</div></section><section class="card">'+newBookForm()+'</section>';
     if(s==='cats')return subHead('الفئات والميزانيات')+catsCard();
     if(s==='rec'){var mb=state.books.filter(function(b){return b.kind==='monthly'&&(!ro(b.id)||(b.rec||[]).length)}); return subHead('المصاريف الثابتة','تنضاف كل شهر كـ«مستحق» لين تأكد إنك دفعت')+(mb.length?mb.map(recCard).join(''):'<section class="card"><p class="note">المصاريف الثابتة للأقسام الشهرية. أضف قسم «مصاريف شهرية» أول.</p></section>')}
@@ -1673,7 +1747,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       else if(a0.indexOf('cat:')===0){var bc=a0.slice(4); txFilter({book:bc.split('|')[0],cat:bc})}
       return}
     if((x=t.closest('[data-txcat]'))){var k0=x.dataset.txcat, m0=x.dataset.txm; txFilter({book:k0.split('|')[0],cat:k0,month:m0||ym(new Date())}); return}
-    if((x=t.closest('[data-set]'))){ui.set=x.dataset.set; ui.emo=null; if(ui.set==='books')loadInvites(); render(); window.scrollTo(0,0); return}
+    if((x=t.closest('[data-set]'))){ui.set=x.dataset.set; ui.emo=null; if(ui.set==='books')loadInvites(); if(ui.set==='users'){loadUsers(); loadInvites()} render(); window.scrollTo(0,0); return}
     if((x=t.closest('[data-go]'))){go(x.dataset.go); return}
     if((x=t.closest('[data-st]'))&&book(ui.book)){ui.status=x.dataset.st; Array.prototype.forEach.call(x.parentNode.children,function(y){y.setAttribute('aria-pressed',y===x)}); $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project'); return}
     if((x=t.closest('[data-q]'))){rpQuick(x.dataset.q); render(); return}
@@ -1723,6 +1797,10 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(t.id==='auForgot'){forgot(); return}
     if(t.id==='auSync'){sync().then(function(r){if(r)toast('تمت المزامنة')}); return}
     if(t.id==='auOut'){signOut(t); return}
+    if(t.id==='auCheck'){t.disabled=true; enter().then(function(){if(cloud.blocked){t.disabled=false; toast('للحين ما في دعوة لحسابك')}}); return}
+    if(t.id==='appInvite'){appInvite(t); return}
+    if((x=t.closest('[data-rmuser]'))){var rc=V.querySelector('[data-rmconfirm="'+x.dataset.rmuser+'"]'); if(rc)rc.hidden=false; return}
+    if((x=t.closest('[data-rmyes]'))){removeUser(x.dataset.rmyes,x); return}
     if(t.id==='rpPdf'){makePdf(t); return}
     if(t.id==='rpXlsx'){makeXlsx(t); return}
     if(t.id==='bkSave'){backupFile(); return}
@@ -1741,7 +1819,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     else if(act==='sumok'){prefs.sumSeen=ym(new Date(new Date().getFullYear(),new Date().getMonth()-1,1)); savePrefs(); render()}
     else if(act==='a2hsok'){prefs.a2hs=true; savePrefs(); render()}
     else if(act==='a2hs')toast('في Safari: اضغط زر المشاركة ⬆︎ تحت، وبعدين «إضافة إلى الشاشة الرئيسية»',null,null,7000);
-    else if(act==='shareapp')shareApp();
+    else if(act==='shareapp'){if(cloud.admin&&acct()){ui.set='users'; loadUsers(); loadInvites(); render(); window.scrollTo(0,0)} else shareApp()}
     else if(act==='newrec')openForm(null,{book:a.dataset.bid,repeat:true});
     else if(act==='lock')showLock('unlock');
     else if(act==='setpin')showLock('set');
@@ -1956,7 +2034,12 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
 
   // an invite link was opened: remember it until the person signs in
-  (function(){var m=/^#invite=([0-9a-f]{32})$/.exec(location.hash); if(m){try{localStorage.setItem(IK,m[1])}catch(e){} try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}})();
+  function grabInvite(){var m=/^#invite=([0-9a-f]{32})$/.exec(location.hash); if(m){try{localStorage.setItem(IK,m[1])}catch(e){} try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}} return !!m}
+  grabInvite();
+  window.addEventListener('hashchange',function(){
+    if(!grabInvite())return; cloud.inviteInfo=null; cloud.why='';
+    if(cloud.user){if(cloud.blocked)enter(); else acceptInvite()} else{inviteInfo(); render()}
+  });
   loadPrefs(); cloudLoad(); load(); runRecurring(); render();
   if(state.pin)showLock('unlock');
   cloudInit();
