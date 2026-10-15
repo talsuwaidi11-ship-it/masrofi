@@ -427,6 +427,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     <div class="ehead"><button type="button" class="xbtn" id="fCancel" aria-label="إغلاق">✕</button><h3 id="formTitle">عملية جديدة</h3><span></span></div>
     <div class="chips scrollx" id="fBooks" role="group" aria-label="القسم"></div>
     <div class="amtbox" id="fAmtBox" aria-live="polite"><div class="expr num" id="fExpr"></div><div class="val"><span class="num" id="fAmountTxt">0</span><small id="fCur"></small></div></div>
+    <div class="seg" id="fType" role="group" aria-label="نوع الدفع"><button type="button" data-v="once" aria-pressed="true">مرة وحدة</button><button type="button" data-v="rep" aria-pressed="false">🔁 كل شهر</button><button type="button" data-v="inst" aria-pressed="false">📅 أقساط</button></div>
     <div class="eacts" id="fEditActs" hidden><button type="button" class="mini soft" id="fDup">كرر هذه العملية</button><button type="button" class="mini danger" id="fDelete">حذف</button></div>
     <div class="cgrid" id="fCats" role="group" aria-label="الفئة"></div>
     <div class="dates" id="fDates"><span class="lab" id="fDateLbl">تاريخ الدفع</span>
@@ -448,8 +449,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
           <button type="button" class="mini danger" id="fRmPhoto" hidden>إزالة الصورة</button>
         </div>
       </div>
-      <label class="check" id="fRepeatWrap"><input type="checkbox" id="fRepeat"> يتكرر كل شهر (مصروف ثابت مثل الإيجار والفواتير)</label>
-      <button type="button" class="btn ghost" id="fInst">قسّط هذا المبلغ على أشهر</button>
+      <input type="checkbox" id="fRepeat" hidden>
       <p class="note" id="fRecNote" hidden></p>
     </div></details>
     <div class="err" id="fErr" role="alert"></div>
@@ -1682,9 +1682,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
   function homeInst(){
     var L=instPlans().map(function(p){p.s=instInfo(p.b,p.r); return p}).filter(function(p){return !p.s.fin});
-    if(!L.length)return '';
+    if(!L.length)return writable().length?'<div class="list"><button type="button" data-act="newinst"><span class="li">📅</span><span style="min-width:0">أضف أقساط<small>سيارة، جوال، قرض: حدد عدد الأشهر وتابع كم باقي</small></span><span class="chev">‹</span></button></div>':'';
     var left=0, mk=ym(new Date()), thisM=0; L.forEach(function(p){left+=p.s.left; p.s.rows.forEach(function(x){if(x.k===mk&&x.st!=='gone')thisM+=x.amount})});
-    return '<section class="card"><h3>الأقساط<span class="tag plain">باقي <span class="num">'+fmt0(left)+'</span></span></h3>'+
+    return '<section class="card"><h3>الأقساط<button class="link" type="button" data-act="newinst">+ أقساط جديدة</button></h3><p class="note">باقي عليك <b class="num">'+fmt0(left)+'</b> '+esc(state.currency)+'</p>'+
       (thisM?'<p class="note">أقساط '+MONTHS[new Date().getMonth()]+': <b class="num">'+fmt0(thisM)+'</b> '+esc(state.currency)+'</p>':'')+
       L.slice(0,4).map(function(p){return '<div data-instopen="'+p.b.id+'" role="button" tabindex="0" style="cursor:pointer">'+instRow(p.b,p.r,false)+'</div>'}).join('')+
       (L.length>4?'<p class="note">و'+(L.length-4)+' خطط ثانية في «الإعدادات ‹ الأقساط والمصاريف الثابتة»</p>':'')+'</section>';
@@ -1750,10 +1750,15 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   $('iN').addEventListener('input',function(){$('iErr').textContent=''; iSync()});
   $('iStart').addEventListener('change',function(){iSync()});
   $('iEnd').addEventListener('change',function(){$('iErr').textContent=''; iSync('end')});
-  $('fInst').onclick=function(){
+  $('fType').addEventListener('click',function(ev){
+    var x=ev.target.closest('[data-v]'); if(!x||form.ro)return;
+    if(x.dataset.v==='inst'){fInstGo(); return}
+    setType(x.dataset.v);
+  });
+  function fInstGo(){
     var a=evalAmt(form.amt), pre={cat:form.cat,payee:$('fPayee').value.trim(),amount:a>0?a:0,date:form.date}, bid=form.book;
     closeForm(); openInst(bid,null,pre);
-  };
+  }
   $('iDelete').onclick=function(){
     var r=inst.edit, b=r&&state.books.find(function(x){return (x.rec||[]).indexOf(r)>=0}); closeInst(); if(!b||ro(b.id))return;
     b.rec=b.rec.filter(function(x){return x!==r}); if(!b.rec.length)delete b.rec; save(); render();
@@ -1829,7 +1834,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
   function setStatus(s){form.status=s; Array.prototype.forEach.call($('fStatus').children,function(x){x.setAttribute('aria-pressed',x.dataset.v===s)}); $('fDateLbl').textContent=s==='due'?'يستحق:':'التاريخ:'}
   function setThumb(src){$('fThumb').hidden=!src; if(src)$('fThumb').src=src; else $('fThumb').removeAttribute('src'); $('fRmPhoto').hidden=!src||form.ro}
-  function repeatUI(){var b=book(form.book); $('fRepeatWrap').hidden=!!form.editing||form.ro||!b||b.kind!=='monthly'}
+  // once / every month (fixed) / installments: shown on top of the sheet so it's easy to find
+  function setType(v){$('fRepeat').checked=v==='rep'; Array.prototype.forEach.call($('fType').children,function(x){x.setAttribute('aria-pressed',x.dataset.v===v)})}
+  function repeatUI(){var b=book(form.book), mon=!!b&&b.kind==='monthly'; $('fType').hidden=!!form.editing||form.ro; $('fType').querySelector('[data-v=rep]').hidden=!mon; if(!mon&&$('fRepeat').checked)setType('once')}
   function openForm(e,opt){
     opt=opt||{};
     var wb=writable(); if(!(e&&!opt.dup)&&!wb.length){toast('الأقسام عندك مشتركة للعرض فقط'); return}
@@ -1854,10 +1861,9 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     $('fErr').textContent=''; $('fCats').classList.remove('need');
     $('fEditActs').hidden=!edit; $('fDelete').hidden=form.ro; $('fDup').hidden=!wb.length;
     $('fKeys').hidden=form.ro; $('fSave').disabled=false;
-    repeatUI(); $('fRepeat').checked=!!opt.repeat;
+    setType(opt.repeat?'rep':'once'); repeatUI();
     var er=edit&&edit.rec&&book(edit.book)&&(book(edit.book).rec||[]).find(function(r){return r.id===edit.rec});
     $('fRecNote').hidden=!(edit&&edit.rec); $('fRecNote').textContent=er&&er.n?'هذا قسط من «'+instName(book(edit.book),er)+'». تعدل الخطة من «الدفعات» في صفحة القسم.':'هذي من المصاريف الثابتة. توقف التكرار من «الدفعات» في صفحة القسم.';
-    $('fInst').hidden=!!edit||form.ro;
     $('fMore').open=!!(opt.repeat||form.ro||(edit&&(edit.status==='due'||edit.payee||edit.ref||edit.note||edit.receipt||edit.method)));
     $('formScrim').hidden=false; $('form').scrollTop=0;
   }
