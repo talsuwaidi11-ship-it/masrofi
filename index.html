@@ -883,6 +883,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(/Invalid login/i.test(m))return 'الإيميل أو كلمة السر غلط.';
     if(/not confirmed/i.test(m))return 'أكّد إيميلك أول من الرسالة اللي وصلتك، وبعدين سجّل دخول.';
     if(/already registered|already been registered|exists/i.test(m))return 'هذا الإيميل مسجل من قبل. اضغط «دخول».';
+    if(/email rate limit|over_email_send_rate_limit|sending.*email|confirmation email/i.test(m))return 'السيرفر ما قدر يرسل إيميل التأكيد الحين (له حد بالساعة). اطلب من صاحب التطبيق، أو جرب بعد ساعة.';
     if(/security purposes|rate limit|too many/i.test(m))return 'محاولات كثيرة. انتظر شوي وجرب مرة ثانية.';
     if(/password/i.test(m))return 'كلمة السر ضعيفة. استخدم 8 أحرف أو أكثر.';
     if(/fetch|network|Failed/i.test(m))return 'ما في اتصال بالإنترنت.';
