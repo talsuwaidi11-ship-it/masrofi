@@ -320,6 +320,7 @@ details.more2 .in{display:flex;flex-direction:column;gap:12px;padding:0 14px 14p
 .list{background:var(--surface);border:1px solid var(--line);border-radius:20px;overflow:hidden;box-shadow:var(--shadow)}
 .list button{display:grid;grid-template-columns:36px 1fr auto;gap:12px;align-items:center;width:100%;border:0;background:transparent;padding:10px 14px;text-align:start;min-height:56px;border-bottom:1px solid var(--line);font-size:15px}
 .list button:last-child{border-bottom:0}
+.ver{margin:4px 0 0;text-align:center;font-size:13px;color:var(--faint)}
 .list.promo{position:relative}.list.promo .chev{display:none}.list.promo button[data-act="newinst"]{padding-inline-end:52px}
 .list .promox{position:absolute;inset-inline-end:6px;top:50%;transform:translateY(-50%);width:40px;height:40px;min-height:40px;padding:0;display:grid;place-items:center;border:0;border-radius:12px;color:var(--faint);font-size:15px;grid-template-columns:none}
 .list .li{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;font-size:18px;background:var(--raise)}
@@ -493,6 +494,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
 (function(){
   'use strict';
   var KEY='masrofi.v1', PK='masrofi.ui', IK='masrofi.invite';
+  // Shown at the bottom of Settings so you can tell the app updated. Raise it with every change that ships.
+  var APP_VER={n:'1.1',d:'2026-11-24'};
   var MONTHS=['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
   var MSHORT=['ينا','فبر','مار','أبر','ماي','يون','يول','أغس','سبت','أكت','نوف','ديس'];
   var DAYS=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
@@ -1571,6 +1574,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var h='<header class="top"><div><h1>الإعدادات</h1></div></header><div class="list">'+rows.map(function(r){return '<button type="button" data-set="'+r[0]+'"><span class="li">'+r[1]+'</span><span style="min-width:0">'+r[2]+'<small>'+esc(r[3])+'</small></span><span class="chev">‹</span></button>'}).join('')+'</div>';
     h+='<div class="list">'+(!CLOUD.url||!acct()||cloud.admin?'<button type="button" data-act="shareapp"><span class="li">📤</span><span style="min-width:0">'+(cloud.admin?'ادعُ شخص جديد للتطبيق<small>رابط دعوة لشخص واحد':'شارك التطبيق مع العايلة<small dir="ltr" style="text-align:right">'+esc(appUrl()))+'</small></span><span class="chev">‹</span></button>':'')+
       (isIOS()&&!standalone()?'<button type="button" data-act="a2hs"><span class="li">📲</span><span>ثبّت التطبيق على الشاشة<small>زر المشاركة ثم «إضافة إلى الشاشة الرئيسية»</small></span><span class="chev">‹</span></button>':'')+'</div>';
+    h+='<p class="ver">الإصدار <bdi class="num">'+APP_VER.n+'</bdi> · '+dlabel(APP_VER.d)+'</p>';
     return h;
   }
   function subHead(t,p){return '<div><button type="button" class="back" data-set="">› الإعدادات</button></div><header class="top"><div><h1>'+t+'</h1>'+(p?'<p>'+p+'</p>':'')+'</div></header>'}
