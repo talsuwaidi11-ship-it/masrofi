@@ -232,6 +232,7 @@ button{cursor:pointer;touch-action:manipulation}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:flex-end;justify-content:center;z-index:10}
 .sheet{background:var(--surface);width:100%;max-width:620px;border-radius:24px 24px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:12px;max-height:calc(100% - 10px - env(safe-area-inset-top,0px));overflow-y:auto;overscroll-behavior:contain}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:up .22s ease-out}@keyframes up{from{transform:translateY(40px);opacity:.6}}}
+.sheet>*{flex-shrink:0}
 .sheet h3{margin:0;font-family:var(--display);font-size:18px;font-weight:600}
 .ehead{display:grid;grid-template-columns:44px 1fr 44px;align-items:center;gap:8px}
 .ehead h3{text-align:center}
@@ -275,6 +276,7 @@ details.more2 .in{display:flex;flex-direction:column;gap:12px;padding:0 14px 14p
 .keys button.op{color:var(--accent);background:var(--accent-soft)}
 .keys button.save{grid-column:span 2;background:var(--accent);color:var(--accent-ink);font-size:18px;font-weight:600;font-family:var(--body)}
 .keys button.save:disabled{opacity:.6}
+@media (max-height:720px){.amtbox .val{font-size:38px}.keys button{height:46px}.cgrid button{min-height:60px;padding:6px 4px}.cgrid button .e{font-size:21px}.sheet{gap:10px}}
 .eacts{display:flex;gap:8px;justify-content:center}
 .row{display:flex;gap:10px;flex-wrap:wrap}
 .row>*{flex:1 1 140px}
@@ -318,6 +320,8 @@ details.more2 .in{display:flex;flex-direction:column;gap:12px;padding:0 14px 14p
 .list{background:var(--surface);border:1px solid var(--line);border-radius:20px;overflow:hidden;box-shadow:var(--shadow)}
 .list button{display:grid;grid-template-columns:36px 1fr auto;gap:12px;align-items:center;width:100%;border:0;background:transparent;padding:10px 14px;text-align:start;min-height:56px;border-bottom:1px solid var(--line);font-size:15px}
 .list button:last-child{border-bottom:0}
+.list.promo{position:relative}.list.promo .chev{display:none}.list.promo button[data-act="newinst"]{padding-inline-end:52px}
+.list .promox{position:absolute;inset-inline-end:6px;top:50%;transform:translateY(-50%);width:40px;height:40px;min-height:40px;padding:0;display:grid;place-items:center;border:0;border-radius:12px;color:var(--faint);font-size:15px;grid-template-columns:none}
 .list .li{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;font-size:18px;background:var(--raise)}
 .list small{display:block;color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .list .chev{color:var(--faint);font-size:18px}
@@ -1249,15 +1253,15 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   // rows sorted newest first; totals per group come from `all` (the full filtered list)
   function groupList(rows,byMonth,showBook,all){
     if(!rows.length)return '';
-    var key=function(r){return byMonth?r.date.slice(0,7):r.date}, tot={}, due={};
-    (all||rows).forEach(function(r){var o=r.status==='due'?due:tot; o[key(r)]=(o[key(r)]||0)+r.amount});
+    var key=function(r){return byMonth?r.date.slice(0,7):r.date}, tot={}, due={}, cnt={};
+    (all||rows).forEach(function(r){var o=r.status==='due'?due:tot; o[key(r)]=(o[key(r)]||0)+r.amount; cnt[key(r)]=(cnt[key(r)]||0)+1});
     var html='',cur=null;
     rows.forEach(function(e){
       var k=key(e);
       if(k!==cur){
         if(cur)html+='</div>'; cur=k;
         var lbl; if(byMonth)lbl=mlabel(k); else{var d=new Date(e.date+'T12:00:00'), f=dfriendly(e.date); lbl=(f==='اليوم'||f==='أمس'?f+' · ':DAYS[d.getDay()]+' ')+dshort(e.date)}
-        html+='<div class="group"><div class="ghead"><span>'+lbl+'</span>'+(tot[k]||!due[k]?'<span class="num">'+fmt(tot[k]||0)+'</span>':'<span style="color:var(--warn)">مستحق <span class="num">'+fmt(due[k])+'</span></span>')+'</div>';
+        html+='<div class="group"><div class="ghead"><span>'+lbl+'</span>'+(!byMonth&&cnt[k]<2?'':tot[k]||!due[k]?'<span class="num">'+fmt(tot[k]||0)+'</span>':'<span style="color:var(--warn)">مستحق <span class="num">'+fmt(due[k])+'</span></span>')+'</div>';
       }
       html+=swItem(e,showBook,false);
     });
@@ -1518,8 +1522,13 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     h+=summaryCard(ym(now),false)+summaryCard(ym(new Date(now.getFullYear(),now.getMonth()-1,1)),false);
     var P=paid(state.expenses), labels=[],full=[],keys=[];
     for(var i=11;i>=0;i--){var d=new Date(now.getFullYear(),now.getMonth()-i,1); keys.push(ym(d)); labels.push(MSHORT[d.getMonth()]); full.push(MONTHS[d.getMonth()]+' '+d.getFullYear())}
-    var series=state.books.map(function(b){return {name:b.name,color:cv(b.color),values:keys.map(function(k){return sum(P.filter(function(e){return e.book===b.id&&e.date.slice(0,7)===k}))})}}).filter(function(se){return se.values.some(function(v){return v>0})});
-    if(series.length)h+='<section class="card"><h3>المصاريف آخر 12 شهر</h3>'+columns('trend',labels,series,{full:full,every:2,aria:'المصاريف الشهرية لآخر 12 شهر'})+'</section>';
+    // projects (house building) dwarf daily spending, so the chart shows one kind at a time
+    var MBk=state.books.filter(function(b){return b.kind==='monthly'}), PBk=state.books.filter(function(b){return b.kind!=='monthly'}), cb=rp.chart||'monthly';
+    if(cb!=='monthly'&&!book(cb))cb='monthly';
+    var CB=!MBk.length||!PBk.length?state.books:cb==='monthly'?MBk:[book(cb)];
+    var cchips=MBk.length&&PBk.length?'<div class="chips scrollx">'+[['monthly','المصاريف الشهرية']].concat(PBk.map(function(b){return [b.id,b.name]})).map(function(q){return '<button type="button" class="chip" data-chart="'+esc(q[0])+'" aria-pressed="'+(cb===q[0])+'">'+esc(q[1])+'</button>'}).join('')+'</div>':'';
+    var series=CB.map(function(b){return {name:b.name,color:cv(b.color),values:keys.map(function(k){return sum(P.filter(function(e){return e.book===b.id&&e.date.slice(0,7)===k}))})}}).filter(function(se){return se.values.some(function(v){return v>0})});
+    if(series.length||cchips)h+='<section class="card"><h3>المصاريف آخر 12 شهر</h3>'+cchips+(series.length?columns('trend',labels,series,{full:full,every:2,aria:'المصاريف الشهرية لآخر 12 شهر'}):'<p class="note">ما في مصاريف مدفوعة في آخر 12 شهر.</p>')+'</section>';
     h+='<section class="card"><h3>ملف تقرير</h3><div class="field"><label for="rpBook">القسم</label><select id="rpBook"><option value="all"'+(rp.book==='all'?' selected':'')+'>كل الأقسام</option>'+state.books.map(function(b){return '<option value="'+b.id+'"'+(rp.book===b.id?' selected':'')+'>'+esc(b.name)+'</option>'}).join('')+'</select></div>'+
       '<div class="field"><span class="lab">الفترة</span><div class="chips">'+[['month','هذا الشهر'],['last','الشهر الماضي'],['year','هذه السنة'],['all','من البداية']].map(function(q){return '<button type="button" class="chip" data-q="'+q[0]+'" aria-pressed="'+(rp.quick===q[0])+'">'+q[1]+'</button>'}).join('')+'</div></div>'+
       '<div class="row"><div class="field"><label for="rpFrom">من</label><input type="date" id="rpFrom" value="'+rp.from+'"></div><div class="field"><label for="rpTo">إلى</label><input type="date" id="rpTo" value="'+rp.to+'"></div></div>'+
@@ -1728,7 +1737,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
   function homeInst(){
     var L=instPlans().map(function(p){p.s=instInfo(p.b,p.r); return p}).filter(function(p){return !p.s.fin});
-    if(!L.length)return writable().length?'<div class="list"><button type="button" data-act="newinst"><span class="li">📅</span><span style="min-width:0">أضف أقساط<small>سيارة، جوال، قرض: حدد عدد الأشهر وتابع كم باقي</small></span><span class="chev">‹</span></button></div>':'';
+    if(!L.length)return writable().length&&!prefs.instHide?'<div class="list promo"><button type="button" data-act="newinst"><span class="li">📅</span><span style="min-width:0">أضف أقساط<small>سيارة، جوال، قرض: حدد عدد الأشهر وتابع كم باقي</small></span><span class="chev">‹</span></button><button type="button" class="promox" data-act="instpromook" aria-label="إخفاء من الرئيسية">✕</button></div>':'';
     var left=0, mk=ym(new Date()), thisM=0; L.forEach(function(p){left+=p.s.left; p.s.rows.forEach(function(x){if(x.k===mk&&x.st!=='gone')thisM+=x.amount})});
     return '<section class="card"><h3>الأقساط<button class="link" type="button" data-act="newinst">+ أقساط جديدة</button></h3><p class="note">باقي عليك <b class="num">'+fmt0(left)+'</b> '+esc(state.currency)+'</p>'+
       (thisM?'<p class="note">أقساط '+MONTHS[new Date().getMonth()]+': <b class="num">'+fmt0(thisM)+'</b> '+esc(state.currency)+'</p>':'')+
@@ -2016,6 +2025,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if((x=t.closest('[data-set]'))){ui.set=x.dataset.set; ui.emo=null; if(ui.set==='books')loadInvites(); if(ui.set==='users'){loadUsers(); loadInvites()} render(); window.scrollTo(0,0); return}
     if((x=t.closest('[data-go]'))){go(x.dataset.go); return}
     if((x=t.closest('[data-st]'))&&book(ui.book)){ui.status=x.dataset.st; Array.prototype.forEach.call(x.parentNode.children,function(y){y.setAttribute('aria-pressed',y===x)}); $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project'); return}
+    if((x=t.closest('[data-chart]'))){ui.rp.chart=x.dataset.chart; render(); return}
     if((x=t.closest('[data-q]'))){rpQuick(x.dataset.q); render(); return}
     if((x=t.closest('[data-k]'))&&x.closest('#newKind')){ui.newKind=x.dataset.k; var nm=$('newName').value,bd=$('newBudget').value; render(); $('newName').value=nm; $('newBudget').value=bd; return}
     if((x=t.closest('[data-emo]'))){ui.emo=ui.emo===x.dataset.emo?null:x.dataset.emo; render(); return}
@@ -2086,6 +2096,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     else if(act==='txmore'){ui.tx.limit+=150; $('txOut').innerHTML=txOut()}
     else if(act==='txclear')txFilter();
     else if(act==='sumok'){prefs.sumSeen=ym(new Date(new Date().getFullYear(),new Date().getMonth()-1,1)); savePrefs(); render()}
+    else if(act==='instpromook'){prefs.instHide=true; savePrefs(); render(); toast('تقدر تضيف أقساط من زر + أو من الإعدادات')}
     else if(act==='a2hsok'){prefs.a2hs=true; savePrefs(); render()}
     else if(act==='a2hs')toast('في Safari: اضغط زر المشاركة ⬆︎ تحت، وبعدين «إضافة إلى الشاشة الرئيسية»',null,null,7000);
     else if(act==='shareapp'){if(cloud.admin&&acct()){ui.set='users'; loadUsers(); loadInvites(); render(); window.scrollTo(0,0)} else shareApp()}
