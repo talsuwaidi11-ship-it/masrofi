@@ -513,7 +513,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
 
   var state={v:4,currency:'درهم',pin:'',books:[],expenses:[]};
   var now0=new Date();
-  var ui={view:'home',book:null,btab:'over',month:firstOfMonth(now0),q:'',status:'all',tx:{book:'all',cat:'all',month:ym(now0),status:'all',q:'',limit:150},rp:{book:'all',from:'',to:'',quick:''},set:'',catBook:null,newKind:'project',emo:null};
+  var ui={view:'home',book:null,btab:'over',month:firstOfMonth(now0),q:'',status:'all',llimit:150,tx:{book:'all',cat:'all',month:ym(now0),status:'all',q:'',limit:150},rp:{book:'all',from:'',to:'',quick:''},set:'',catBook:null,newKind:'project',emo:null};
   var prefs={lastBook:null,sumSeen:'',a2hs:false};
   var $=function(id){return document.getElementById(id)};
 
@@ -541,8 +541,10 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(label)t.querySelector('button').onclick=function(){t.hidden=true; fn()};
     clearTimeout(toast.t); toast.t=setTimeout(function(){t.hidden=true},ms||(label?5000:2400));
   }
+  // Arabic-Indic and Persian digits to 0-9, Arabic decimal point to '.'
+  function normDigits(s){return String(s==null?'':s).replace(/[٠-٩]/g,function(d){return '٠١٢٣٤٥٦٧٨٩'.indexOf(d)}).replace(/[۰-۹]/g,function(d){return '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)}).replace(/٫/g,'.')}
   function parseAmount(s){
-    s=String(s==null?'':s).trim().replace(/[٠-٩]/g,function(d){return '٠١٢٣٤٥٦٧٨٩'.indexOf(d)}).replace(/٫/g,'.').replace(/[,،\s]/g,'');
+    s=normDigits(s).trim().replace(/[,،٬\s]/g,'');
     var n=parseFloat(s); return isFinite(n)?Math.round(n*100)/100:NaN;
   }
   function book(id){return state.books.find(function(b){return b.id===id})}
@@ -1268,7 +1270,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     return html+'</div>';
   }
   function filterRows(rows){
-    var q=ui.q.trim().toLowerCase();
+    var q=normDigits(ui.q).trim().toLowerCase();
     return rows.filter(function(e){
       if(ui.status!=='all'&&e.status!==ui.status)return false;
       if(!q)return true;
@@ -1382,7 +1384,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
 
   // ---------- transactions ----------
   function txRows(){
-    var f=ui.tx, q=f.q.trim().toLowerCase();
+    var f=ui.tx, q=normDigits(f.q).trim().toLowerCase();
     return state.expenses.filter(function(e){
       if(f.book!=='all'&&e.book!==f.book)return false;
       if(f.cat!=='all'&&e.book+'|'+e.cat!==f.cat)return false;
@@ -1503,8 +1505,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
       (w?'<button type="button" class="btn soft" data-act="newrec" data-bid="'+b.id+'">+ أضف مصروف ثابت</button>':'')+'</section>';
   }
   function ledgerInner(rows,byMonth){
-    var f=filterRows(rows).sort(function(a,b){return b.date.localeCompare(a.date)||(b.created||0)-(a.created||0)});
-    return f.length?groupList(f,byMonth,false):'<div class="empty"><b>ما في نتائج</b><span>جرب كلمة ثانية أو غيّر الفلتر.</span></div>';
+    var f=filterRows(rows).sort(function(a,b){return b.date.localeCompare(a.date)||(b.created||0)-(a.created||0)}), shown=f.slice(0,ui.llimit);
+    return f.length?groupList(shown,byMonth,false,f)+(f.length>shown.length?'<button type="button" class="more" data-act="ledgermore">عرض المزيد (<span class="num">'+(f.length-shown.length)+'</span>)</button>':''):'<div class="empty"><b>ما في نتائج</b><span>جرب كلمة ثانية أو غيّر الفلتر.</span></div>';
   }
   function ledger(rows,byMonth,emptyMsg){
     var h='<section class="card"><h3>العمليات <span class="muted num" style="font-size:12px;font-weight:400">'+rows.length+'</span></h3>';
@@ -1746,12 +1748,13 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   }
 
   var inst={edit:null,book:null,mode:'per'};
+  function instCur(){var x=inst.edit, b=x&&book(x.bid), r=b&&(b.rec||[]).find(function(y){return y.id===x.id}); return r?{b:b,r:r}:null}
   function instBooks(){return writable()}
   function iCats(){var b=book($('iBook').value); $('iCat').innerHTML=b?b.cats.map(function(c){return '<option value="'+esc(c.id)+'">'+emo(c)+' '+esc(c.n)+'</option>'}).join(''):''}
   function iMode(v){inst.mode=v; Array.prototype.forEach.call($('iMode').children,function(x){x.setAttribute('aria-pressed',x.dataset.v===v)}); $('iAmtLbl').textContent=v==='total'?'المبلغ الكامل':'قيمة القسط'}
-  function iCount(){var v=String($('iN').value).replace(/[٠-٩]/g,function(d){return '٠١٢٣٤٥٦٧٨٩'.indexOf(d)}).trim(); return /^\d+$/.test(v)?+v:0}
+  function iCount(){var v=normDigits($('iN').value).trim(); return /^\d+$/.test(v)?+v:0}
   function iRead(){
-    var amt=evalAmt(String($('iAmt').value).replace(/[٠-٩]/g,function(d){return '٠١٢٣٤٥٦٧٨٩'.indexOf(d)}).replace(/٫/g,'.').replace(/[,،\s]/g,'')), n=iCount(), st=$('iStart').value;
+    var amt=evalAmt(normDigits($('iAmt').value).replace(/[,،٬\s]/g,'')), n=iCount(), st=$('iStart').value;
     var o={n:n>=1&&n<=360?n:0,start:validDate(st)?st:'',amount:0,last:0,total:0};
     if(amt>0&&o.n){
       if(inst.mode==='total'){o.total=Math.round(amt*100)/100; o.amount=Math.floor(o.total/o.n*100+1e-6)/100; o.last=Math.round((o.total-o.amount*(o.n-1))*100)/100}
@@ -1783,7 +1786,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     pre=pre||{};
     var wb=instBooks(); if(!wb.length){toast('الأقسام عندك مشتركة للعرض فقط'); return}
     var b=book(bid)&&!ro(bid)?book(bid):(book(ui.book)&&!ro(ui.book)&&ui.view==='book'?book(ui.book):wb[0]), r=rid&&(b.rec||[]).find(function(x){return x.id===rid});
-    inst.edit=r||null;
+    inst.edit=r?{bid:b.id,id:r.id}:null;
     $('iTitle').textContent=r?'تعديل الأقساط':'أقساط جديدة';
     $('iBook').innerHTML=wb.map(function(x){return '<option value="'+x.id+'"'+(x.id===b.id?' selected':'')+'>'+esc(x.name)+'</option>'}).join(''); $('iBook').disabled=!!r;
     iCats(); var cid=r?r.cat:pre.cat; if(!cid){var dc=b.cats.find(function(c){return /قسط|أقساط|اقساط|قرض|بنك/.test(c.n)})||b.cats.find(function(c){return /other$/.test(c.id)}); cid=dc&&dc.id}
@@ -1818,7 +1821,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     closeForm(); openInst(bid,null,pre);
   }
   $('iDelete').onclick=function(){
-    var r=inst.edit, b=r&&state.books.find(function(x){return (x.rec||[]).indexOf(r)>=0}); closeInst(); if(!b||ro(b.id))return;
+    var cur=instCur(), r=cur&&cur.r, b=cur&&cur.b; closeInst(); if(!b||ro(b.id)){toast('ما لقيت الخطة. يمكن انحذفت من جهاز ثاني.'); render(); return}
     b.rec=b.rec.filter(function(x){return x!==r}); if(!b.rec.length)delete b.rec; save(); render();
     toast('انحذفت الخطة، والعمليات المسجلة باقية','تراجع',function(){if(book(b.id)){b.rec=(b.rec||[]).concat([r]); save(); render()}});
   };
@@ -1830,7 +1833,10 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if(!o.n){$('iErr').textContent='اكتب عدد الأقساط (من 1 إلى 360).'; $('iN').focus(); return}
     if(!o.start){$('iErr').textContent='اختر تاريخ أول قسط.'; return}
     if(!b.cats.some(function(c){return c.id===cid})){$('iErr').textContent='اختر الفئة.'; return}
-    var r=inst.edit||{id:'r'+uid(),method:'',note:'',done:''}, k0=o.start.slice(0,7), mk=ym(new Date()), added=0;
+    var cur=instCur(); if(inst.edit&&!cur){$('iErr').textContent='ما لقيت الخطة. يمكن انحذفت من جهاز ثاني.'; return}
+    var r=cur?cur.r:{id:'r'+uid(),method:'',note:'',done:''}, k0=o.start.slice(0,7), mk=ym(new Date()), added=0;
+    // months deliberately deleted before the edit stay deleted
+    var gone={}; if(cur&&r.done){var hv={}; state.expenses.forEach(function(e){if(e.rec===r.id&&e.book===b.id)hv[recMonth(e)]=1}); for(var g=r.start;g<=r.done&&g<=instEnd(r);g=addM(g,1))if(!hv[g])gone[g]=1}
     r.cat=cid; r.amount=o.amount; r.n=o.n; r.start=k0; r.day=+o.start.slice(8,10); r.name=$('iName').value.trim().slice(0,40); r.payee=$('iPayee').value.trim().slice(0,60);
     if(o.last!==o.amount)r.last=o.last; else delete r.last;
     if(!inst.edit){
@@ -1840,6 +1846,17 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
         for(var k=k0;k<=to;k=addM(k,1)){var e=instEntry(b,r,k,'paid'); if(!have[e.id]){state.expenses.push(e); added++} r.done=k}
       }
       b.rec=(b.rec||[]).concat([r]);
+    }else{
+      // the dates may have moved: renumber what's recorded, drop unpaid ones now outside the plan, fill months now inside it
+      var endK=instEnd(r), has={}, nm=function(i){return ((r.name?r.name+' · ':'')+'قسط '+i+' من '+r.n).slice(0,140)};
+      state.expenses=state.expenses.filter(function(e){
+        if(e.rec!==r.id||e.book!==b.id)return true; var k=recMonth(e); if(!k)return true;
+        if(k<k0||k>endK)return e.status!=='due';
+        has[k]=1; if(!e.note||/قسط \d+ من \d+$/.test(e.note))e.note=nm(mDiff(k0,k)+1); return true;
+      });
+      var upto=mk<endK?mk:endK;
+      for(var k3=k0;k3<=upto;k3=addM(k3,1))if(!has[k3]&&!gone[k3])state.expenses.push(instEntry(b,r,k3,'due'));
+      r.done=k0<=upto?upto:'';
     }
     if(save())toast(inst.edit?'تم تعديل الأقساط':'تمت إضافة الأقساط'+(added?'، و'+added+' مدفوعة قبل':''));
     closeInst(); runRecurring(); ui.book=b.id; ui.btab='due'; if(ui.view!=='settings')go('book'); else render();
@@ -2014,7 +2031,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if((x=t.closest('[data-editinst]'))){var pi=x.dataset.editinst.split('|'); if(book(pi[0])&&!ro(pi[0]))openInst(pi[0],pi[1]); return}
     if((x=t.closest('[data-instinfo]'))){var pi2=x.dataset.instinfo.split('|'); openInstInfo(pi2[0],pi2[1]); return}
     if((x=t.closest('[data-edit]'))){if(x.dataset.swiped)return; var e2=state.expenses.find(function(r){return r.id===x.dataset.edit}); if(e2&&!(e2.rec&&openInstInfo(e2.book,e2.rec)))openForm(e2); return}
-    if((x=t.closest('[data-open]'))){ui.book=x.dataset.open; ui.q=''; ui.status='all'; ui.btab='over'; ui.month=firstOfMonth(new Date()); go('book'); return}
+    if((x=t.closest('[data-open]'))){ui.book=x.dataset.open; ui.q=''; ui.status='all'; ui.llimit=150; ui.btab='over'; ui.month=firstOfMonth(new Date()); go('book'); return}
     if((x=t.closest('[data-btab]'))){ui.btab=x.dataset.btab; ui.q=''; ui.status='all'; render(); return}
     if((x=t.closest('[data-alert]'))){var a0=x.dataset.alert;
       if(a0==='dues')txFilter({month:'all',status:'due'});
@@ -2024,7 +2041,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     if((x=t.closest('[data-txcat]'))){var k0=x.dataset.txcat, m0=x.dataset.txm; txFilter({book:k0.split('|')[0],cat:k0,month:m0||ym(new Date())}); return}
     if((x=t.closest('[data-set]'))){ui.set=x.dataset.set; ui.emo=null; if(ui.set==='books')loadInvites(); if(ui.set==='users'){loadUsers(); loadInvites()} render(); window.scrollTo(0,0); return}
     if((x=t.closest('[data-go]'))){go(x.dataset.go); return}
-    if((x=t.closest('[data-st]'))&&book(ui.book)){ui.status=x.dataset.st; Array.prototype.forEach.call(x.parentNode.children,function(y){y.setAttribute('aria-pressed',y===x)}); $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project'); return}
+    if((x=t.closest('[data-st]'))&&book(ui.book)){ui.status=x.dataset.st; ui.llimit=150; Array.prototype.forEach.call(x.parentNode.children,function(y){y.setAttribute('aria-pressed',y===x)}); $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project'); return}
     if((x=t.closest('[data-chart]'))){ui.rp.chart=x.dataset.chart; render(); return}
     if((x=t.closest('[data-q]'))){rpQuick(x.dataset.q); render(); return}
     if((x=t.closest('[data-k]'))&&x.closest('#newKind')){ui.newKind=x.dataset.k; var nm=$('newName').value,bd=$('newBudget').value; render(); $('newName').value=nm; $('newBudget').value=bd; return}
@@ -2093,6 +2110,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     else if(act==='setbudget'){var mb=state.books.find(function(b){return b.kind==='monthly'&&!ro(b.id)}); toSettings('books',mb&&'sec-'+mb.id,mb&&'bud-'+mb.id)}
     else if(act==='catbud'){ui.catBook=ui.book; toSettings('cats')}
     else if(act==='alltx')txFilter({month:'all'});
+    else if(act==='ledgermore'&&book(ui.book)){ui.llimit+=150; $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project')}
     else if(act==='txmore'){ui.tx.limit+=150; $('txOut').innerHTML=txOut()}
     else if(act==='txclear')txFilter();
     else if(act==='sumok'){prefs.sumSeen=ym(new Date(new Date().getFullYear(),new Date().getMonth()-1,1)); savePrefs(); render()}
@@ -2108,8 +2126,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
   });
   V.addEventListener('mouseover',function(ev){var x=ev.target.closest('.hit'); if(x)showTip(x)});
   V.addEventListener('input',function(ev){
-    if(ev.target.id==='search'&&book(ui.book)){ui.q=ev.target.value; $('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project')}
-    if(ev.target.id==='txSearch'){ui.tx.q=ev.target.value; ui.tx.limit=150; $('txOut').innerHTML=txOut()}
+    if(ev.target.id==='search'&&book(ui.book)){ui.q=ev.target.value; ui.llimit=150; clearTimeout(V.qt); V.qt=setTimeout(function(){if(book(ui.book)&&$('ledger'))$('ledger').innerHTML=ledgerInner(currentLedgerRows(),book(ui.book).kind==='project')},140)}
+    if(ev.target.id==='txSearch'){ui.tx.q=ev.target.value; ui.tx.limit=150; clearTimeout(V.qt); V.qt=setTimeout(function(){if($('txOut'))$('txOut').innerHTML=txOut()},140)}
   });
   V.addEventListener('change',function(ev){
     var t=ev.target, d=t.dataset, v=(t.value||'').trim();
@@ -2135,7 +2153,8 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     else if(t.hasAttribute('data-payee')){var old=t.getAttribute('data-payee'); if(!v){t.value=old; return}
       state.expenses.forEach(function(e){if(e.payee===old&&!ro(e.book))e.payee=v}); state.books.forEach(function(b2){if(!ro(b2.id))(b2.rec||[]).forEach(function(r){if(r.payee===old)r.payee=v})})}
     else return;
-    save(); toast('تم الحفظ'); render();
+    // after the tap lands: if it went to another field, wait until the person leaves the page's fields
+    save(); toast('تم الحفظ'); setTimeout(softRender,0);
   });
   // swipe a row: left deletes (with undo), right repeats it
   var sw=null;
@@ -2218,6 +2237,7 @@ textarea.backup{font-family:ui-monospace,Menlo,monospace;font-size:12px!importan
     var added=0, jobs=[];
     list.forEach(function(e){
       if(!e||typeof e!=='object')return;
+      if(e.id!=null&&have[String(e.id)])return;
       var id=newId(e.id,'x'); if(have[id])return;
       var ob=e.book==null?'':String(e.book); if(bmap[ob]===null||foreign(ob))return;
       var bid=bmap[ob]||(acct()?scoped(ob||'personal'):ob);
